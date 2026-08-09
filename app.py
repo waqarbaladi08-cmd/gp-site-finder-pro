@@ -8,6 +8,10 @@ from datetime import datetime
 from pathlib import Path
 import zipfile
 import shutil
+import os
+import urllib.parse
+import urllib.request
+import urllib.error
 
 import pandas as pd
 import streamlit as st
@@ -38,6 +42,22 @@ HERO_IMAGE_PATH = BASE_DIR / "assets" / "dashboard_hero.png"
 PROFILE_DATA_PATH = BASE_DIR / "database" / "profile_settings.json"
 LINKEDIN_URL = "https://www.linkedin.com/in/aaquib-seo/"
 
+RESELLER_PRIVATE_DB_PATH = BASE_DIR / "database" / "reseller_private.db"
+SHEET_STRUCTURE_DB_PATH = BASE_DIR / "database" / "sheet_structure.db"
+DEFAULT_RESELLER_MARKUP = 20.0
+def _secret_or_env(name: str) -> str:
+    value = os.getenv(name, "")
+    if value:
+        return str(value)
+    try:
+        return str(st.secrets.get(name, ""))
+    except Exception:
+        return ""
+
+SUPABASE_URL = _secret_or_env("SUPABASE_URL").rstrip("/")
+SUPABASE_SECRET_KEY = _secret_or_env("SUPABASE_SECRET_KEY")
+AHREFS_API_KEY = str(os.getenv("AHREFS_API_KEY", ""))
+
 
 # =========================================================
 # STYLING — LOVABLE INSPIRED PREMIUM SAAS
@@ -48,25 +68,26 @@ st.markdown(
     @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Sora:wght@500;600;700&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,400,0,0');
 
     :root {
-        --bg: #F6F3ED;
-        --surface: #FFFCF7;
-        --surface-2: #F0ECE5;
-        --ink: #202231;
-        --muted: #6D7080;
-        --border: #DED9D0;
-        --sidebar: #11192E;
-        --sidebar-2: #0D1427;
-        --sidebar-line: rgba(255,255,255,.09);
-        --purple: #7045D6;
-        --purple-soft: #EEE8FF;
-        --cyan: #18BFC5;
-        --cyan-soft: #DDF5F4;
-        --ice: #E7F7FB;
-        --gold: #DEA83B;
-        --gold-soft: #F8EED7;
-        --danger: #D9505B;
-        --shadow: 0 1px 2px rgba(26,29,42,.05), 0 16px 40px -24px rgba(19,25,46,.34);
-        --shadow-lg: 0 24px 62px -30px rgba(17,25,46,.48);
+        --bg: #E8EDF5;
+        --surface: #F8FAFD;
+        --surface-2: #EEF3F8;
+        --surface-3: #E3EAF3;
+        --ink: #172033;
+        --muted: #65728A;
+        --border: #CED7E4;
+        --sidebar: #090E1A;
+        --sidebar-2: #0B1222;
+        --sidebar-line: rgba(255,255,255,.08);
+        --purple: #6B4FE3;
+        --purple-soft: #ECE7FF;
+        --cyan: #0FA9B2;
+        --cyan-soft: #DDF6F5;
+        --ice: #E7F1FF;
+        --gold: #D59B2D;
+        --gold-soft: #FFF2D7;
+        --danger: #F06A78;
+        --shadow: 0 18px 45px -30px rgba(0,0,0,.72);
+        --shadow-lg: 0 28px 70px -34px rgba(0,0,0,.82);
     }
 
     html, body, [class*="css"] { font-family: "Manrope", sans-serif; }
@@ -74,9 +95,9 @@ st.markdown(
 
     .stApp {
         background:
-            radial-gradient(circle at 88% 0%, rgba(24,191,197,.07), transparent 25rem),
-            radial-gradient(circle at 72% 12%, rgba(112,69,214,.055), transparent 20rem),
-            var(--bg);
+            radial-gradient(circle at 88% 0%, rgba(15,169,178,.10), transparent 25rem),
+            radial-gradient(circle at 68% 9%, rgba(107,79,227,.08), transparent 22rem),
+            linear-gradient(180deg,#EDF2F8 0%,#E6ECF4 100%);
         color: var(--ink);
     }
 
@@ -84,7 +105,7 @@ st.markdown(
         max-width: 1500px;
         padding-top: 1.15rem;
         padding-bottom: 3rem;
-        animation: pageIn .42s cubic-bezier(.2,.75,.25,1) both;
+        animation: none;
     }
 
     @keyframes pageIn { from {opacity:0; transform:translateY(8px)} to {opacity:1; transform:none} }
@@ -104,60 +125,119 @@ st.markdown(
         margin:0 -2px 10px;
     }
     .sidebar-logo {
-        width:38px; height:38px; border-radius:13px;
+        width:40px; height:40px; border-radius:14px;
         display:grid; place-items:center;
-        background: linear-gradient(135deg,#6F48DB 0%,#3987D9 55%,#18BFC5 100%);
-        box-shadow:0 10px 26px rgba(73,84,218,.30);
+        background:
+            radial-gradient(circle at 28% 22%,rgba(255,255,255,.28),transparent 25%),
+            linear-gradient(135deg,#7650E3 0%,#4D7CE0 52%,#1AC8C7 100%);
+        box-shadow:
+            0 10px 28px rgba(70,82,215,.32),
+            inset 0 0 0 1px rgba(255,255,255,.18);
+        transition:transform .2s ease,box-shadow .2s ease;
+    }
+    .sidebar-logo:hover {
+        transform:translateY(-2px) rotate(-2deg);
+        box-shadow:0 14px 32px rgba(70,82,215,.38);
     }
     .sidebar-logo .material-symbols-rounded {font-size:20px;color:white;}
-    .sidebar-title {font-family:"Sora";font-size:14px;font-weight:700;color:#fff;line-height:1.25;}
-    .sidebar-sub {font-size:10px;color:#8993AA;margin-top:3px;letter-spacing:.025em;}
+    .sidebar-title {font-family:"Sora";font-size:14px;font-weight:750;color:#fff;line-height:1.25;letter-spacing:-.01em;}
+    .sidebar-sub {font-size:10px;color:#96A2BA;margin-top:3px;letter-spacing:.035em;}
 
     [data-testid="stSidebar"] [role="radiogroup"] label {
         position:relative;
-        border-radius:11px;
-        padding:9px 10px 9px 40px;
-        margin:2px 4px;
-        min-height:40px;
+        border-radius:13px;
+        padding:10px 12px 10px 46px;
+        margin:3px 4px;
+        min-height:43px;
         transition:all .18s ease;
-        font-size:13.5px;
-        font-weight:600;
-        color:#CAD0DE;
+        font-size:13.2px;
+        font-weight:650;
+        color:#C7CEDD;
+        border:1px solid transparent;
+        letter-spacing:.005em;
     }
+
     [data-testid="stSidebar"] [role="radiogroup"] label:hover {
-        background:rgba(255,255,255,.055);
-        transform:translateX(2px);
+        background:linear-gradient(90deg,rgba(255,255,255,.06),rgba(255,255,255,.025));
+        transform:translateX(3px);
         color:#fff;
+        border-color:rgba(255,255,255,.07);
     }
+
     [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
-        background: linear-gradient(90deg, rgba(112,69,214,.26), rgba(24,191,197,.09));
+        background:
+            linear-gradient(90deg,rgba(112,69,214,.28),rgba(24,191,197,.10));
         color:#fff;
-        box-shadow:inset 0 0 0 1px rgba(130,92,232,.48);
+        border-color:rgba(132,101,229,.46);
+        box-shadow:
+            inset 3px 0 0 #49E2DF,
+            0 8px 22px rgba(0,0,0,.13);
     }
+
     [data-testid="stSidebar"] [role="radiogroup"] label::before {
         font-family:"Material Symbols Rounded";
-        position:absolute; left:13px; top:50%; transform:translateY(-50%);
-        font-size:19px; color:#AEB7CB;
+        position:absolute;
+        left:12px;
+        top:50%;
+        transform:translateY(-50%);
+        width:25px;
+        height:25px;
+        border-radius:8px;
+        display:grid;
+        place-items:center;
+        font-size:17px;
+        color:#C3CCDD;
+        background:rgba(255,255,255,.055);
+        border:1px solid rgba(255,255,255,.07);
         transition:all .18s ease;
     }
-    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked)::before { color:#49E2DF; }
 
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(1)::before {content:"dashboard"; color:#9A7DF0;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(2)::before {content:"monitoring"; color:#53C7D1;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(3)::before {content:"search"; color:#62BFF2;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(4)::before {content:"add_circle"; color:#4DD7BE;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(5)::before {content:"upload_file"; color:#58C6F0;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(6)::before {content:"edit_square"; color:#C19AF4;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(7)::before {content:"delete"; color:#F37D8A;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(8)::before {content:"content_copy"; color:#F2B84A;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(9)::before {content:"download"; color:#6BD6B0;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(10)::before {content:"star"; color:#F1C64E;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(11)::before {content:"contacts"; color:#51D0C3;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(12)::before {content:"groups"; color:#9B91F4;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(13)::before {content:"mail"; color:#67C7E5;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(14)::before {content:"account_circle"; color:#AA91EE;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(15)::before {content:"settings"; color:#AAB2C2;}
-    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(16)::before {content:"shield_lock"; color:#F29A73;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:hover::before {
+        background:rgba(255,255,255,.09);
+        transform:translateY(-50%) scale(1.04);
+    }
+
+    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked)::before {
+        color:#071B23;
+        background:linear-gradient(135deg,#71F0E7,#41C9D8);
+        border-color:rgba(255,255,255,.45);
+        box-shadow:0 6px 16px rgba(24,191,197,.24);
+    }
+
+    /* Navigation icons — matched to current menu order */
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(1)::before  {content:"dashboard";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(2)::before  {content:"monitoring";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(3)::before  {content:"search";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(4)::before  {content:"query_stats";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(5)::before  {content:"person_search";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(6)::before  {content:"add_circle";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(7)::before  {content:"upload_file";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(8)::before  {content:"edit_square";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(9)::before  {content:"delete";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(10)::before {content:"content_copy";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(11)::before {content:"download";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(12)::before {content:"star";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(13)::before {content:"contact_page";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(14)::before {content:"shield_person";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(15)::before {content:"sell";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(16)::before {content:"data_table";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(17)::before {content:"cloud_sync";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(18)::before {content:"lock_person";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(19)::before {content:"conversion_path";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(20)::before {content:"groups";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(21)::before {content:"support_agent";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(22)::before {content:"account_circle";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(23)::before {content:"backup";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(24)::before {content:"settings";}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(25)::before {content:"admin_panel_settings";}
+
+    /* Tiny visual separator before admin / system tools */
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(17) {
+        margin-top:10px;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(23) {
+        margin-top:10px;
+    }
 
     .sidebar-user {
         border:1px solid var(--sidebar-line);
@@ -175,8 +255,8 @@ st.markdown(
         text-transform:uppercase;letter-spacing:.20em;margin-bottom:7px;
     }
     .brand-badge::before {content:"";width:18px;height:2px;background:linear-gradient(90deg,var(--purple),var(--cyan));border-radius:2px;}
-    .main-title {font-size:36px;font-weight:700;letter-spacing:-.035em;color:#202231;margin:0;line-height:1.14;}
-    .subtitle {color:var(--muted);font-size:13px;margin:7px 0 18px;}
+    .main-title {font-size:36px;font-weight:700;letter-spacing:-.035em;color:#172033;margin:0;line-height:1.14;}
+    .subtitle {color:#65728A;font-size:13px;margin:7px 0 18px;}
 
     .hero-shell {
         position:relative; overflow:hidden;
@@ -207,7 +287,7 @@ st.markdown(
     .hero-photo-shell img {width:100%;height:100%;object-fit:cover;display:block;filter:saturate(.95) contrast(1.04);}
 
     .metric-card {
-        background:linear-gradient(145deg,#FFFDF9,#F7F3ED);
+        background:linear-gradient(145deg,#FBFCFE,#F1F5F9);
         border:1px solid var(--border);border-radius:18px;padding:18px 19px;min-height:132px;
         box-shadow:var(--shadow);transition:transform .2s ease,box-shadow .2s ease;
         animation:pageIn .45s ease both;
@@ -218,40 +298,45 @@ st.markdown(
     .metric-icon.sage {background:#E4F0E3;color:#527758;}
     .metric-icon.copper {background:#F3E7DF;color:#A36A49;}
     .metric-icon .material-symbols-rounded {font-size:21px;}
-    .metric-label {font-size:10px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:#727584;margin-bottom:7px;}
-    .metric-value {font-size:28px;font-weight:600;color:#202231;letter-spacing:-.03em;}
-    .metric-delta {font-size:10px;color:#777B88;margin-top:5px;}
+    .metric-label {font-size:10px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:#758198;margin-bottom:7px;}
+    .metric-value {font-size:28px;font-weight:600;color:#172033;letter-spacing:-.03em;}
+    .metric-delta {font-size:10px;color:#7A879C;margin-top:5px;}
 
-    .section-title {font-family:"Sora";font-size:19px;font-weight:650;color:#242635;margin:26px 0 12px;display:flex;align-items:center;gap:10px;}
+    .section-title {font-family:"Sora";font-size:19px;font-weight:650;color:#1B2437;margin:26px 0 12px;display:flex;align-items:center;gap:10px;}
     .section-kicker {font-size:11px;color:var(--muted);margin-top:-7px;margin-bottom:14px;}
 
     .surface-card {
-        background:linear-gradient(145deg,#FFFDF9,#FBF8F2);
+        background:linear-gradient(145deg,#FBFCFE,#F2F6FA);
         border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow);padding:20px;
+        color:#1B2437;
     }
 
-    .publisher-list {background:#FFFDF9;border:1px solid var(--border);border-radius:18px;overflow:hidden;box-shadow:var(--shadow);}
+    .publisher-list {background:#F9FBFD;border:1px solid var(--border);border-radius:18px;overflow:hidden;box-shadow:var(--shadow);}
     .publisher-head {display:flex;justify-content:space-between;align-items:center;padding:17px 19px;border-bottom:1px solid var(--border);}
     .publisher-title {font-family:"Sora";font-weight:650;font-size:15px;color:#242635;}
     .publisher-sub {font-size:10.5px;color:#7A7E8A;margin-top:3px;}
     .publisher-row {display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;align-items:center;padding:13px 19px;border-bottom:1px solid #E8E3DA;transition:background .15s ease;}
-    .publisher-row:last-child{border-bottom:0}.publisher-row:hover{background:#F7F3ED}
-    .publisher-site {font-size:12.5px;font-weight:700;color:#262836;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .publisher-meta {font-size:10px;color:#7A7E8A;margin-top:2px;}
-    .dr-badge {background:#F0ECE6;border-radius:999px;padding:5px 8px;font-size:10px;font-weight:700;color:#343645;}
+    .publisher-row:last-child{border-bottom:0}.publisher-row:hover{background:#EEF3F8}
+    .publisher-site {font-size:12.5px;font-weight:700;color:#1B2437;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .publisher-meta {font-size:10px;color:#748198;margin-top:2px;}
+    .dr-badge {background:#E8EEF6;border:1px solid #D4DEE9;border-radius:999px;padding:5px 8px;font-size:10px;font-weight:700;color:#344158;}
     .price-tag {font-size:12px;font-weight:800;color:var(--purple);min-width:55px;text-align:right;}
 
     .form-section {
-        background:linear-gradient(145deg,#FFFDF9,#FBF8F2);border:1px solid var(--border);border-radius:18px;padding:20px 22px;margin:12px 0 16px;box-shadow:var(--shadow);
+        background:linear-gradient(145deg,#FBFCFE,#F1F5F9);border:1px solid var(--border);border-radius:18px;padding:20px 22px;margin:12px 0 16px;box-shadow:var(--shadow);
     }
-    .form-section-title {font-family:"Sora";font-size:17px;font-weight:650;color:#242635;margin-bottom:3px;}
-    .form-section-sub {font-size:11px;color:#777B88;margin-bottom:13px;}
+    .form-section-title {font-family:"Sora";font-size:17px;font-weight:650;color:#1B2437;margin-bottom:3px;}
+    .form-section-sub {font-size:11px;color:#718097;margin-bottom:13px;}
 
     div[data-baseweb="select"] > div,
     div[data-testid="stTextInput"] input,
     div[data-testid="stNumberInput"] input,
     div[data-testid="stTextArea"] textarea {
-        border-radius:12px!important;border-color:#D8D3CB!important;background:#FFFCF7!important;color:#252735!important;min-height:42px;
+        border-radius:12px!important;
+        border-color:#CBD5E1!important;
+        background:#F9FBFD!important;
+        color:#182033!important;
+        min-height:42px;
     }
     div[data-testid="stTextInput"] input:focus,
     div[data-testid="stNumberInput"] input:focus,
@@ -263,12 +348,134 @@ st.markdown(
     .stButton > button:hover,.stDownloadButton > button:hover,.stLinkButton > a:hover {transform:translateY(-1px);}
     .stButton > button[kind="primary"] {background:linear-gradient(135deg,#6E42D4,#7249DB 55%,#4F71DA);border:0;box-shadow:0 9px 22px rgba(112,69,214,.22);}
 
-    [data-testid="stDataFrame"] {border:1px solid var(--border);border-radius:16px;overflow:hidden;background:#FFFDF9;box-shadow:var(--shadow);}
-    [data-testid="stMetric"] {background:#FFFDF9;border:1px solid var(--border);border-radius:16px;padding:14px;box-shadow:var(--shadow);}
 
     .wa-float {position:fixed;right:22px;bottom:22px;z-index:9999;width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;text-decoration:none!important;background:linear-gradient(135deg,#17A854,#24CA67);box-shadow:0 12px 28px rgba(34,197,94,.32);border:2px solid rgba(255,255,255,.9);transition:transform .18s ease;animation:softGlow 3s ease-in-out infinite;}
     .wa-float:hover{transform:translateY(-3px) scale(1.03)}.wa-float svg{width:29px;height:29px;fill:#fff}
     .whatsapp-button {display:block;text-align:center;background:linear-gradient(135deg,#16A34A,#22C55E);color:#fff!important;padding:12px 16px;border-radius:11px;font-weight:800;text-decoration:none!important;margin:8px 0;box-shadow:0 8px 18px rgba(34,197,94,.22);}
+
+
+    /* Remove remaining bright white surfaces */
+    [data-baseweb="popover"],
+    [data-baseweb="menu"],
+    [data-baseweb="select"] ul,
+    [role="listbox"] {
+        background:#F9FBFD!important;
+        color:#182033!important;
+        border-color:#CBD5E1!important;
+    }
+    [role="option"] {background:#F9FBFD!important;color:#182033!important;}
+    [role="option"]:hover {background:#EAF1F8!important;}
+
+    [data-testid="stDataFrame"] {
+        border:1px solid var(--border);
+        border-radius:16px;
+        overflow:hidden;
+        background:#F4F7FB;
+        box-shadow:var(--shadow);
+    }
+
+    [data-testid="stMetric"] {
+        background:#F8FAFD;
+        border:1px solid var(--border);
+        border-radius:16px;
+        padding:14px;
+        box-shadow:var(--shadow);
+    }
+
+    [data-testid="stAlert"] {
+        background:#F4F7FB!important;
+        color:#1C2538!important;
+        border:1px solid #D2DBE7!important;
+        border-radius:14px!important;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        background:#F4F7FB;
+        border-radius:12px;
+        padding:4px;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        color:#67758C!important;
+        border-radius:9px;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background:#E7EEFA!important;
+        color:#20304A!important;
+    }
+
+    .stExpander {
+        background:#F8FAFD!important;
+        border:1px solid #D2DBE7!important;
+        border-radius:14px!important;
+    }
+
+    /* Softer loading / less visual flash */
+    [data-testid="stStatusWidget"],
+    [data-testid="stSpinner"] {
+        color:#5FE0DB!important;
+    }
+
+
+    /* High-contrast premium polish */
+    .stButton > button:not([kind="primary"]),
+    .stDownloadButton > button,
+    .stLinkButton > a {
+        background:#F7F9FC!important;
+        color:#22304A!important;
+        border:1px solid #C9D4E2!important;
+        box-shadow:0 5px 14px rgba(25,41,72,.07)!important;
+    }
+    .stButton > button:not([kind="primary"]):hover,
+    .stDownloadButton > button:hover,
+    .stLinkButton > a:hover {
+        background:#EEF3F9!important;
+        color:#172033!important;
+        border-color:#9FB1C8!important;
+    }
+    [data-testid="stCaptionContainer"], .stCaption, small {
+        color:#68758C!important;
+    }
+    label, [data-testid="stWidgetLabel"] {
+        color:#253149!important;
+        font-weight:600!important;
+    }
+    [data-testid="stDataFrame"] {
+        background:#F8FAFD!important;
+        border-color:#CBD6E3!important;
+    }
+    [data-testid="stMetric"] {
+        background:#F8FAFD!important;
+        color:#182033!important;
+    }
+
+    /* Distinct icon colors */
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(1)::before  {background:rgba(71,194,230,.16);color:#58D5F3;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(2)::before  {background:rgba(157,124,245,.16);color:#B79AF9;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(3)::before  {background:rgba(84,169,255,.16);color:#72B7FF;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(4)::before  {background:rgba(46,213,168,.16);color:#5DE2B7;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(5)::before  {background:rgba(244,184,75,.16);color:#F5C65E;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(6)::before  {background:rgba(69,216,191,.16);color:#5AE3C8;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(7)::before  {background:rgba(91,180,255,.16);color:#77C3FF;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(8)::before  {background:rgba(183,139,246,.16);color:#CAA4FA;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(9)::before  {background:rgba(245,107,120,.16);color:#FF8995;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(10)::before {background:rgba(244,184,75,.16);color:#F5C65E;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(11)::before {background:rgba(75,205,167,.16);color:#6BE0BB;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(12)::before {background:rgba(250,200,69,.16);color:#FFD65C;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(13)::before {background:rgba(71,194,230,.16);color:#6FDBF2;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(14)::before {background:rgba(121,101,237,.16);color:#A391F3;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(15)::before {background:rgba(232,145,74,.16);color:#F0A66A;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(16)::before {background:rgba(91,180,255,.16);color:#76C2FF;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(17)::before {background:rgba(46,213,168,.16);color:#5DE2B7;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(18)::before {background:rgba(241,123,158,.16);color:#F395B2;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(19)::before {background:rgba(157,124,245,.16);color:#B89AF8;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(20)::before {background:rgba(75,205,167,.16);color:#69DEBA;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(21)::before {background:rgba(91,180,255,.16);color:#75C1FF;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(22)::before {background:rgba(157,124,245,.16);color:#B99AF8;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(23)::before {background:rgba(244,184,75,.16);color:#F5C65E;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(24)::before {background:rgba(137,151,176,.18);color:#BBC5D6;}
+    [data-testid="stSidebar"] [role="radiogroup"] label:nth-child(25)::before {background:rgba(245,107,120,.16);color:#FF8995;}
 
     @media(max-width:900px){
         .hero-shell{grid-template-columns:1fr;padding:26px}.hero-photo-shell{height:220px}.hero-title{font-size:28px}.main-title{font-size:30px}
@@ -282,6 +489,339 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+# =========================================================
+# SUPABASE / LIVE SYNC
+# =========================================================
+def cloud_enabled() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
+
+def _supabase_headers(extra=None):
+    h={"apikey":SUPABASE_SECRET_KEY,"Authorization":f"Bearer {SUPABASE_SECRET_KEY}","Content-Type":"application/json"}
+    if extra: h.update(extra)
+    return h
+
+def supabase_request(method, table, query="", payload=None, prefer=""):
+    if not cloud_enabled():
+        raise RuntimeError("Supabase secrets configured nahi hain.")
+    url=f"{SUPABASE_URL}/rest/v1/{table}" + (("?"+query.lstrip("?")) if query else "")
+    data=None if payload is None else json.dumps(payload,ensure_ascii=False).encode("utf-8")
+    headers=_supabase_headers({"Prefer":prefer} if prefer else None)
+    req=urllib.request.Request(url,data=data,headers=headers,method=method.upper())
+    try:
+        with urllib.request.urlopen(req,timeout=45) as r:
+            raw=r.read().decode("utf-8")
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as exc:
+        body=exc.read().decode("utf-8",errors="ignore")
+        raise RuntimeError(f"Supabase HTTP {exc.code}: {body}") from exc
+
+def cloud_fetch(table, select="*", extra_query=""):
+    q=f"select={urllib.parse.quote(select,safe='*,()')}"
+    if extra_query: q += "&"+extra_query.lstrip("&")
+    return pd.DataFrame(supabase_request("GET",table,q) or [])
+
+def cloud_upsert_rows(table, rows, on_conflict=""):
+    if not rows: return
+    q=("on_conflict="+urllib.parse.quote(on_conflict,safe=",")) if on_conflict else ""
+    supabase_request("POST",table,q,rows,"resolution=merge-duplicates,return=minimal")
+
+def cloud_delete(table, query):
+    supabase_request("DELETE",table,query,prefer="return=minimal")
+
+def load_cloud_sites():
+    if not cloud_enabled(): return pd.DataFrame()
+    all_rows=[]; offset=0; limit=1000
+    while True:
+        batch=supabase_request("GET","gp_sites",f"select=*&order=id.desc&offset={offset}&limit={limit}") or []
+        all_rows.extend(batch)
+        if len(batch)<limit: break
+        offset += limit
+    return pd.DataFrame(all_rows)
+
+def cloud_patch_site(site_id, updates):
+    if not cloud_enabled(): return
+    payload=dict(updates); payload["updated_at"]=datetime.now().isoformat(timespec="seconds")
+    supabase_request("PATCH","gp_sites",f"id=eq.{int(site_id)}",payload,"return=minimal")
+
+def cloud_delete_site(site_id):
+    if cloud_enabled(): cloud_delete("gp_sites",f"id=eq.{int(site_id)}")
+
+
+def _site_payload_from_dict(r: dict) -> dict:
+    return {
+        "id": int(r["id"]),
+        "site": clean_value(r.get("site","")),
+        "country": clean_value(r.get("country","")),
+        "da": clean_value(r.get("da","")),
+        "dr": clean_value(r.get("dr","")),
+        "traffic": clean_value(r.get("traffic","")),
+        "original_price": parse_price(r.get("original_price", r.get("general_price",""))),
+        "selling_price": parse_price(r.get("selling_price", r.get("general_price",""))),
+        "markup_percent": float(r.get("markup_percent", DEFAULT_RESELLER_MARKUP) or DEFAULT_RESELLER_MARKUP),
+        "manual_price": bool(r.get("manual_price",0)),
+        "casino_original_price": parse_price(r.get("casino_original_price", r.get("casino_price",""))),
+        "casino_selling_price": parse_price(r.get("casino_selling_price", r.get("casino_price",""))),
+        "payment_method": clean_value(r.get("payment_method","")),
+        "tat": clean_value(r.get("tat","")),
+        "type": clean_value(r.get("type","")),
+        "link_type": clean_value(r.get("link_type","")),
+        "source_file": clean_value(r.get("source_file","")),
+        "sheet_name": clean_value(r.get("sheet_name","")),
+        "favorite": bool(r.get("favorite",0)),
+        "created_at": clean_value(r.get("created_at","")) or datetime.now().isoformat(timespec="seconds"),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def fast_sync_local_sites_to_cloud(progress_callback=None, batch_size: int = 250) -> int:
+    """Fast bulk initial sync. One HTTP request per batch instead of one per site."""
+    if not cloud_enabled():
+        raise RuntimeError("Supabase not configured.")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        frame = pd.read_sql_query("SELECT * FROM sites ORDER BY id", conn)
+
+    total = len(frame)
+    if total == 0:
+        return 0
+
+    # Initial sync intentionally replaces cloud gp_sites.
+    cloud_delete("gp_sites", "id=gt.0")
+
+    sent = 0
+    for start in range(0, total, batch_size):
+        batch_df = frame.iloc[start:start + batch_size]
+        payload = [_site_payload_from_dict(r.to_dict()) for _, r in batch_df.iterrows()]
+        cloud_upsert_rows("gp_sites", payload, on_conflict="id")
+        sent += len(payload)
+        if progress_callback:
+            progress_callback(sent, total)
+
+    return sent
+
+
+
+# =========================================================
+# AHREFS REAL METRICS
+# =========================================================
+def ahrefs_enabled() -> bool:
+    return bool(AHREFS_API_KEY)
+
+
+def _ahrefs_request_json(url: str, *, method: str = "GET", payload=None):
+    if not AHREFS_API_KEY:
+        raise RuntimeError("AHREFS_API_KEY is not configured.")
+
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {AHREFS_API_KEY}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "GP-Site-Finder-Pro/1.0",
+        },
+        method=method,
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        if exc.code == 401:
+            raise RuntimeError("Ahrefs API key invalid/expired (401).") from exc
+        if exc.code == 403:
+            raise RuntimeError(
+                "Ahrefs plan/API key me Site Explorer traffic access enabled nahi hai (403)."
+            ) from exc
+        if exc.code == 429:
+            raise RuntimeError(
+                "Ahrefs rate limit reached (429). Thori dair baad try karein."
+            ) from exc
+        raise RuntimeError(f"Ahrefs HTTP {exc.code}: {body[:300]}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Ahrefs connection error: {exc}") from exc
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def ahrefs_live_dr(target: str) -> dict:
+    target = normalize_domain(target)
+    if not target:
+        raise ValueError("Valid domain required.")
+
+    endpoint = "https://api.ahrefs.com/v3/public/domain-rating-free"
+    query = urllib.parse.urlencode({"target": target, "output": "json"})
+    payload = _ahrefs_request_json(f"{endpoint}?{query}")
+
+    dr_obj = payload.get("domain_rating", {}) if isinstance(payload, dict) else {}
+    return {
+        "dr": dr_obj.get("domain_rating"),
+        "license": clean_value(dr_obj.get("license", "")),
+        "warning": clean_value(dr_obj.get("warning", "")),
+    }
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def ahrefs_live_traffic(target: str) -> dict:
+    """
+    Ahrefs estimated monthly organic traffic.
+    This endpoint may require paid Site Explorer API access.
+    """
+    target = normalize_domain(target)
+    if not target:
+        raise ValueError("Valid domain required.")
+
+    endpoint = "https://api.ahrefs.com/v3/site-explorer/metrics"
+    query = urllib.parse.urlencode({
+        "target": target,
+        "date": datetime.now().date().isoformat(),
+        "mode": "domain",
+        "protocol": "both",
+        "volume_mode": "monthly",
+        "traffic_mode": "static",
+        "output": "json",
+    })
+
+    payload = _ahrefs_request_json(f"{endpoint}?{query}")
+    metrics = payload.get("metrics", {}) if isinstance(payload, dict) else {}
+
+    return {
+        "organic_traffic": metrics.get("org_traffic"),
+        "organic_keywords": metrics.get("org_keywords"),
+        "organic_keywords_top3": metrics.get("org_keywords_1_3"),
+        "organic_traffic_value_cents": metrics.get("org_cost"),
+    }
+
+
+def save_live_dr(site_id: int, live_dr) -> None:
+    if live_dr is None:
+        return
+    dr_text = str(round(float(live_dr), 1))
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE sites SET dr=? WHERE id=?", (dr_text, int(site_id)))
+        conn.commit()
+
+    try:
+        sync_one_site_to_cloud(int(site_id))
+    except Exception:
+        pass
+
+
+def save_live_traffic(site_id: int, live_traffic) -> None:
+    if live_traffic is None:
+        return
+    traffic_text = str(int(live_traffic))
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE sites SET traffic=? WHERE id=?",
+            (traffic_text, int(site_id)),
+        )
+        conn.commit()
+
+    try:
+        sync_one_site_to_cloud(int(site_id))
+    except Exception:
+        pass
+
+
+
+# =========================================================
+# FAST SEARCH / PAGINATION HELPERS
+# =========================================================
+@st.cache_data(show_spinner=False, ttl=1800)
+def cached_filter_lists(
+    niches: tuple,
+    countries: tuple,
+    payments: tuple,
+    link_types: tuple,
+    sheets: tuple,
+):
+    return {
+        "niche": ["All"] + list(niches),
+        "country": ["All"] + list(countries),
+        "payment": ["All"] + list(payments),
+        "link_type": ["All"] + list(link_types),
+        "sheet": ["All"] + list(sheets),
+    }
+
+
+def _clean_filter_values(frame: pd.DataFrame, column: str):
+    if column not in frame.columns:
+        return tuple()
+    values = safe_unique(frame, column)
+    return tuple(values[1:] if values and values[0] == "All" else values)
+
+
+def get_filter_options(frame: pd.DataFrame) -> dict:
+    return cached_filter_lists(
+        _clean_filter_values(frame, "detected_niche"),
+        _clean_filter_values(frame, "country"),
+        _clean_filter_values(frame, "payment_method"),
+        _clean_filter_values(frame, "link_type"),
+        _clean_filter_values(frame, "sheet_name"),
+    )
+
+
+def fast_filter_sites(
+    frame: pd.DataFrame,
+    search_query: str,
+    niche: str,
+    country: str,
+    payment: str,
+    link_type: str,
+    sheet: str,
+    min_dr: float,
+    max_price: float,
+) -> pd.DataFrame:
+    filtered = frame
+
+    if search_query.strip():
+        raw_query = search_query.strip().lower()
+        smart_query = normalize_search_query(raw_query)
+        queries = [value for value in {raw_query, smart_query} if value]
+
+        search_mask = pd.Series(False, index=filtered.index)
+
+        for query in queries:
+            search_mask |= filtered["_search_text"].str.contains(
+                query,
+                regex=False,
+                na=False,
+            )
+
+        if "site" in filtered.columns and smart_query:
+            normalized_sites = (
+                filtered["site"]
+                .fillna("")
+                .astype(str)
+                .map(normalize_search_query)
+            )
+            search_mask |= normalized_sites.eq(smart_query)
+
+        filtered = filtered.loc[search_mask]
+
+    if niche != "All":
+        filtered = filtered.loc[filtered["detected_niche"].eq(niche)]
+    if country != "All":
+        filtered = filtered.loc[filtered["country"].eq(country)]
+    if payment != "All":
+        filtered = filtered.loc[filtered["payment_method"].eq(payment)]
+    if link_type != "All":
+        filtered = filtered.loc[filtered["link_type"].eq(link_type)]
+    if sheet != "All":
+        filtered = filtered.loc[filtered["sheet_name"].eq(sheet)]
+
+    return filtered.loc[
+        filtered["_dr_num"].fillna(-1).ge(min_dr)
+        & filtered["_price_num"].fillna(0).le(max_price)
+    ]
 
 
 # =========================================================
@@ -435,6 +975,38 @@ def ensure_databases() -> None:
             )
             """
         )
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sites)").fetchall()}
+        for col_name, col_type in [
+            ("original_price","TEXT"),("selling_price","TEXT"),("markup_percent","REAL DEFAULT 20"),
+            ("manual_price","INTEGER DEFAULT 0"),("casino_original_price","TEXT"),("casino_selling_price","TEXT")
+        ]:
+            if col_name not in existing_cols:
+                conn.execute(f"ALTER TABLE sites ADD COLUMN {col_name} {col_type}")
+        conn.execute("""CREATE TABLE IF NOT EXISTS reseller_settings(
+            source_file TEXT NOT NULL, sheet_name TEXT NOT NULL, markup_percent REAL DEFAULT 20,
+            updated_at TEXT NOT NULL, PRIMARY KEY(source_file,sheet_name))""")
+        conn.execute("UPDATE sites SET original_price=general_price WHERE original_price IS NULL OR original_price='' ")
+        conn.execute("UPDATE sites SET casino_original_price=casino_price WHERE casino_original_price IS NULL OR casino_original_price='' ")
+        conn.execute("UPDATE sites SET markup_percent=20 WHERE markup_percent IS NULL")
+        conn.execute("""UPDATE sites SET selling_price=CASE WHEN selling_price IS NULL OR selling_price='' THEN
+            CASE WHEN CAST(REPLACE(REPLACE(original_price,'$',''),',','') AS REAL)>0 THEN printf('%.2f',CAST(REPLACE(REPLACE(original_price,'$',''),',','') AS REAL)*1.20) ELSE general_price END ELSE selling_price END""")
+        conn.execute("""UPDATE sites SET casino_selling_price=CASE WHEN casino_selling_price IS NULL OR casino_selling_price='' THEN
+            CASE WHEN CAST(REPLACE(REPLACE(casino_original_price,'$',''),',','') AS REAL)>0 THEN printf('%.2f',CAST(REPLACE(REPLACE(casino_original_price,'$',''),',','') AS REAL)*1.20) ELSE casino_price END ELSE casino_selling_price END""")
+        conn.execute("UPDATE sites SET general_price=selling_price WHERE selling_price IS NOT NULL AND selling_price<>''")
+        conn.execute("UPDATE sites SET casino_price=casino_selling_price WHERE casino_selling_price IS NOT NULL AND casino_selling_price<>''")
+        conn.commit()
+
+    with sqlite3.connect(RESELLER_PRIVATE_DB_PATH) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS reseller_private(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, source_file TEXT NOT NULL, sheet_name TEXT,
+            field_name TEXT NOT NULL, field_value TEXT, updated_at TEXT NOT NULL)""")
+        conn.commit()
+
+    with sqlite3.connect(SHEET_STRUCTURE_DB_PATH) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS sheet_structure(
+            source_file TEXT NOT NULL, sheet_name TEXT NOT NULL, header_row INTEGER, status TEXT,
+            mapped_fields TEXT, private_count INTEGER DEFAULT 0, updated_at TEXT NOT NULL,
+            PRIMARY KEY(source_file,sheet_name))""")
         conn.commit()
 
     with sqlite3.connect(CONTACT_DB_PATH) as conn:
@@ -569,26 +1141,99 @@ def ensure_databases() -> None:
 ensure_databases()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=1800)
 def load_sites() -> pd.DataFrame:
-    with sqlite3.connect(DB_PATH) as conn:
-        frame = pd.read_sql_query("SELECT * FROM sites ORDER BY id DESC", conn)
+    """
+    FAST STARTUP MODE:
+    - Local SQLite is primary for instant page load.
+    - Supabase is only used as fallback if local DB is empty.
+    - Cloud Sync page remains responsible for explicit cloud synchronization.
+    """
+    frame = pd.DataFrame()
+
+    # 1) Local first — much faster than downloading 13k+ rows on every fresh app start.
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            frame = pd.read_sql_query(
+                "SELECT * FROM sites ORDER BY id DESC",
+                conn,
+            )
+    except Exception:
+        frame = pd.DataFrame()
+
+    # 2) Cloud fallback only when local DB has no site data.
+    if frame.empty and cloud_enabled():
+        try:
+            frame = load_cloud_sites()
+        except Exception:
+            frame = pd.DataFrame()
 
     if frame.empty:
         return frame
 
+    if "selling_price" in frame.columns:
+        frame["general_price"] = frame["selling_price"].where(
+            frame["selling_price"].notna(),
+            frame.get("general_price"),
+        )
+
+    if "casino_selling_price" in frame.columns:
+        frame["casino_price"] = frame["casino_selling_price"].where(
+            frame["casino_selling_price"].notna(),
+            frame.get("casino_price"),
+        )
+
+    frame = add_detected_niche(frame)
+
+    for _cat_col in ["country", "payment_method", "link_type"]:
+        if _cat_col in frame.columns:
+            _s = frame[_cat_col].fillna("").astype(str).str.strip()
+            _s = _s.mask(_s.map(_looks_numeric_only), "")
+
+            if _cat_col == "country":
+                _country_valid = (
+                    _s.str.contains(r"[A-Za-z]", regex=True, na=False)
+                    & ~_s.str.contains(r"\d", regex=True, na=False)
+                    & _s.str.match(r"^[A-Za-zÀ-ÿ .,'()&/-]+$", na=False)
+                    & (_s.str.len() <= 80)
+                )
+                _s = _s.mask(~_country_valid, "")
+
+            elif _cat_col == "payment_method":
+                _allowed = [
+                    "after", "upfront", "advance", "negoti",
+                    "paypal", "bank", "wise", "payoneer",
+                    "crypto", "usdt", "stripe", "other",
+                ]
+                _valid = _s.str.lower().map(
+                    lambda x: (
+                        x == ""
+                        or any(token in x for token in _allowed)
+                    )
+                )
+                _s = _s.mask(~_valid, "")
+
+            elif _cat_col == "link_type":
+                _allowed = [
+                    "dofollow", "do follow", "nofollow",
+                    "no follow", "mixed", "sponsored",
+                ]
+                _valid = _s.str.lower().map(
+                    lambda x: (
+                        x == ""
+                        or any(token in x for token in _allowed)
+                    )
+                )
+                _s = _s.mask(~_valid, "")
+
+            frame[_cat_col] = _s
+
     searchable_columns = [
-        column
-        for column in [
-            "site",
-            "country",
-            "type",
-            "source_file",
-            "sheet_name",
-            "payment_method",
-            "link_type",
+        c for c in [
+            "site", "country", "type", "detected_niche",
+            "source_file", "sheet_name", "payment_method", "link_type"
         ]
-        if column in frame.columns
+        if c in frame.columns
     ]
 
     frame["_search_text"] = (
@@ -603,12 +1248,8 @@ def load_sites() -> pd.DataFrame:
         frame.get("dr", pd.Series(index=frame.index, dtype=object)),
         errors="coerce",
     )
-
     frame["_price_num"] = pd.to_numeric(
-        frame.get(
-            "general_price",
-            pd.Series(index=frame.index, dtype=object),
-        ),
+        frame.get("general_price", pd.Series(index=frame.index, dtype=object)),
         errors="coerce",
     )
 
@@ -655,6 +1296,96 @@ def clean_value(value) -> str:
         return ""
     text = str(value).strip()
     return "" if text.lower() in {"nan", "none", "null"} else text
+
+
+
+NICHE_RULES = {
+    "SaaS": [
+        "saas", "software", "cloud", "crm", "erp", "app", "apps", "platform",
+        "startup", "b2b", "automation", "hosting", "web tool"
+    ],
+    "Tech": [
+        "tech", "technology", "digital", "computer", "mobile", "gadget",
+        "electronics", "cyber", "internet", "ai", "artificial intelligence"
+    ],
+    "Business": [
+        "business", "finance", "marketing", "entrepreneur", "startup",
+        "corporate", "management", "invest", "investment"
+    ],
+    "Food": [
+        "food", "recipe", "restaurant", "kitchen", "cooking", "chef",
+        "meal", "drink", "beverage"
+    ],
+    "Health": [
+        "health", "medical", "fitness", "wellness", "doctor", "hospital",
+        "medicine", "nutrition", "dental"
+    ],
+    "Travel": [
+        "travel", "tour", "tourism", "hotel", "holiday", "vacation",
+        "flight", "trip"
+    ],
+    "Education": [
+        "education", "school", "college", "university", "student",
+        "learning", "academy", "course"
+    ],
+    "Home & Garden": [
+        "home", "garden", "interior", "decor", "furniture", "property",
+        "real estate", "construction"
+    ],
+    "Fashion & Beauty": [
+        "fashion", "beauty", "style", "clothing", "apparel", "makeup",
+        "skin", "jewelry"
+    ],
+    "Sports": [
+        "sport", "sports", "football", "cricket", "basketball", "soccer",
+        "fitness sports"
+    ],
+    "Entertainment": [
+        "entertainment", "movie", "music", "celebrity", "gaming", "games",
+        "film", "tv"
+    ],
+    "News": [
+        "news", "media", "daily", "journal", "press", "magazine"
+    ],
+    "Automotive": [
+        "auto", "automotive", "car", "cars", "vehicle", "motor", "bike"
+    ],
+    "Crypto": [
+        "crypto", "bitcoin", "blockchain", "web3", "forex"
+    ],
+}
+
+
+def detect_niche_value(row) -> str:
+    parts = [
+        clean_value(row.get("type", "")),
+        clean_value(row.get("sheet_name", "")),
+        clean_value(row.get("source_file", "")),
+        clean_value(row.get("site", "")),
+    ]
+    text = " ".join(parts).lower()
+
+    # Stronger signal from explicit type/sheet name first.
+    explicit = " ".join(parts[:2]).lower()
+    for niche, keywords in NICHE_RULES.items():
+        if any(k in explicit for k in keywords):
+            return niche
+
+    # Then domain/source fallback.
+    for niche, keywords in NICHE_RULES.items():
+        if any(k in text for k in keywords):
+            return niche
+
+    return "General"
+
+
+def add_detected_niche(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        frame["detected_niche"] = []
+        return frame
+    frame = frame.copy()
+    frame["detected_niche"] = frame.apply(detect_niche_value, axis=1)
+    return frame
 
 
 def normalize_search_query(value: str) -> str:
@@ -740,6 +1471,94 @@ def normalize_link_type(value) -> str:
     return clean_value(value)
 
 
+def parse_price(value):
+    m=re.search(r"-?\d+(?:\.\d+)?",clean_value(value).replace(",",""))
+    return float(m.group()) if m else None
+
+def get_sheet_markup(source_file, sheet_name):
+    with sqlite3.connect(DB_PATH) as conn:
+        row=conn.execute("SELECT markup_percent FROM reseller_settings WHERE source_file=? AND sheet_name=?",(source_file,sheet_name)).fetchone()
+    return float(row[0]) if row else DEFAULT_RESELLER_MARKUP
+
+def sync_one_site_to_cloud(site_id):
+    if not cloud_enabled(): return
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory=sqlite3.Row
+        r=conn.execute("SELECT * FROM sites WHERE id=?",(int(site_id),)).fetchone()
+    if not r: return
+    d=dict(r)
+    payload={
+        "id":int(d["id"]),"site":clean_value(d.get("site","")),"country":clean_value(d.get("country","")),
+        "da":clean_value(d.get("da","")),"dr":clean_value(d.get("dr","")),"traffic":clean_value(d.get("traffic","")),
+        "original_price":parse_price(d.get("original_price",d.get("general_price",""))),
+        "selling_price":parse_price(d.get("selling_price",d.get("general_price",""))),
+        "markup_percent":float(d.get("markup_percent",DEFAULT_RESELLER_MARKUP) or DEFAULT_RESELLER_MARKUP),
+        "manual_price":bool(d.get("manual_price",0)),
+        "casino_original_price":parse_price(d.get("casino_original_price",d.get("casino_price",""))),
+        "casino_selling_price":parse_price(d.get("casino_selling_price",d.get("casino_price",""))),
+        "payment_method":clean_value(d.get("payment_method","")),"tat":clean_value(d.get("tat","")),
+        "type":clean_value(d.get("type","")),"link_type":clean_value(d.get("link_type","")),
+        "source_file":clean_value(d.get("source_file","")),"sheet_name":clean_value(d.get("sheet_name","")),
+        "favorite":bool(d.get("favorite",0)),"created_at":clean_value(d.get("created_at","")) or datetime.now().isoformat(timespec="seconds"),
+        "updated_at":datetime.now().isoformat(timespec="seconds")
+    }
+    cloud_upsert_rows("gp_sites",[payload],"id")
+
+def set_sheet_markup(source_file, sheet_name, markup):
+    now=datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""INSERT INTO reseller_settings(source_file,sheet_name,markup_percent,updated_at) VALUES(?,?,?,?)
+        ON CONFLICT(source_file,sheet_name) DO UPDATE SET markup_percent=excluded.markup_percent,updated_at=excluded.updated_at""",(source_file,sheet_name,float(markup),now))
+        conn.execute("""UPDATE sites SET markup_percent=?,
+            selling_price=CASE WHEN manual_price=1 THEN selling_price WHEN CAST(REPLACE(REPLACE(original_price,'$',''),',','') AS REAL)>0 THEN printf('%.2f',CAST(REPLACE(REPLACE(original_price,'$',''),',','') AS REAL)*(1+?/100.0)) ELSE selling_price END,
+            general_price=CASE WHEN manual_price=1 THEN general_price WHEN CAST(REPLACE(REPLACE(original_price,'$',''),',','') AS REAL)>0 THEN printf('%.2f',CAST(REPLACE(REPLACE(original_price,'$',''),',','') AS REAL)*(1+?/100.0)) ELSE general_price END
+            WHERE source_file=? AND sheet_name=?""",(float(markup),float(markup),float(markup),source_file,sheet_name))
+        ids=[x[0] for x in conn.execute("SELECT id FROM sites WHERE source_file=? AND sheet_name=?",(source_file,sheet_name)).fetchall()]
+        conn.commit()
+    if cloud_enabled():
+        cloud_upsert_rows("reseller_settings",[{"source_file":source_file,"sheet_name":sheet_name,"markup_percent":float(markup),"updated_at":now}],"source_file,sheet_name")
+        for site_id in ids: sync_one_site_to_cloud(site_id)
+
+PRIVATE_KEYWORDS=["owner","founder","ceo","manager","publisher","admin","contact","phone","mobile","whatsapp","email","telegram","skype","linkedin","paypal","payoneer","wise","stripe","usdt","jazzcash","easypaisa","sadapay","nayapay","bank","binance","account","payment","iban"]
+
+def detect_private_rows(raw_df, header_row, source_file, sheet_name):
+    sn=clean_heading(sheet_name)
+    if any(x in sn for x in ["scammer","scam alert","blacklist","reported"]): return []
+    if header_row is not None: scan_limit=min(header_row,len(raw_df))
+    else:
+        if not any(x in sn for x in ["intro","contact","team","payment","about"]): return []
+        scan_limit=min(60,len(raw_df))
+    out=[]
+    for idx in range(scan_limit):
+        vals=[clean_value(v) for v in raw_df.iloc[idx].tolist()]; vals=[v for v in vals if v]
+        if not vals: continue
+        joined=" | ".join(vals); low=joined.lower()
+        phone=bool(re.search(r"\+?\d[\d\s().-]{7,}\d",joined)); email=bool(re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}",joined,re.I)); key=any(k in low for k in PRIVATE_KEYWORDS)
+        if not (phone or email or key): continue
+        kind="Payment" if ("payment" in low or any(k in low for k in ["paypal","payoneer","wise","stripe","jazzcash","easypaisa","bank","binance","usdt"])) else ("WhatsApp / Phone" if phone or any(k in low for k in ["whatsapp","phone","mobile"]) else ("Email" if email else "Team / Contact"))
+        out.append({"source_file":source_file,"sheet_name":sheet_name,"field_name":f"{kind} • Row {idx+1}","field_value":joined})
+    return out
+
+def save_private_rows(rows):
+    if not rows: return 0
+    now=datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(RESELLER_PRIVATE_DB_PATH) as conn:
+        for r in rows:
+            conn.execute("DELETE FROM reseller_private WHERE source_file=? AND sheet_name=? AND field_name=?",(r["source_file"],r["sheet_name"],r["field_name"]))
+            conn.execute("INSERT INTO reseller_private(source_file,sheet_name,field_name,field_value,updated_at) VALUES(?,?,?,?,?)",(r["source_file"],r["sheet_name"],r["field_name"],r["field_value"],now))
+        conn.commit()
+    if cloud_enabled():
+        payload=[{"source_file":r["source_file"],"sheet_name":r["sheet_name"],"field_name":r["field_name"],"field_value":r["field_value"],"private":True,"updated_at":now} for r in rows]
+        cloud_upsert_rows("reseller_private",payload)
+    return len(rows)
+
+def save_structure_report(source_file,sheet_name,header_row,mapped_fields,private_count):
+    now=datetime.now().isoformat(timespec="seconds"); status="OK" if header_row is not None else ("Private info sheet" if private_count else "No website header")
+    with sqlite3.connect(SHEET_STRUCTURE_DB_PATH) as conn:
+        conn.execute("""INSERT INTO sheet_structure(source_file,sheet_name,header_row,status,mapped_fields,private_count,updated_at) VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(source_file,sheet_name) DO UPDATE SET header_row=excluded.header_row,status=excluded.status,mapped_fields=excluded.mapped_fields,private_count=excluded.private_count,updated_at=excluded.updated_at""",(source_file,sheet_name,(header_row+1 if header_row is not None else None),status,mapped_fields,int(private_count),now)); conn.commit()
+    if cloud_enabled(): cloud_upsert_rows("sheet_structure",[{"source_file":source_file,"sheet_name":sheet_name,"header_row":(header_row+1 if header_row is not None else None),"status":status,"mapped_fields":mapped_fields,"private_count":int(private_count),"updated_at":now}],"source_file,sheet_name")
+
 def prepare_import_dataframe(uploaded_df, source_file, sheet_name):
     matched = {
         field: match_column(uploaded_df.columns, aliases)
@@ -781,53 +1600,91 @@ def prepare_import_dataframe(uploaded_df, source_file, sheet_name):
         item["site"] = domain
         item["payment_method"] = normalize_payment(item["payment_method"])
         item["link_type"] = normalize_link_type(item["link_type"])
-        rows.append(item)
+        original=clean_value(item["general_price"]); casino_original=clean_value(item["casino_price"]); markup=get_sheet_markup(source_file,sheet_name)
+        item["original_price"]=original; item["markup_percent"]=markup; item["manual_price"]=0
+        item["selling_price"]=(f"{parse_price(original)*(1+markup/100.0):.2f}" if parse_price(original) is not None else original)
+        item["casino_original_price"]=casino_original; item["casino_selling_price"]=(f"{parse_price(casino_original)*(1+markup/100.0):.2f}" if parse_price(casino_original) is not None else casino_original)
+        item["general_price"]=item["selling_price"]; item["casino_price"]=item["casino_selling_price"]; rows.append(item)
 
     return pd.DataFrame(rows)
 
 
 def save_imported_sites(prepared_df):
-    if prepared_df.empty:
-        return 0
-
-    rows = [
-        (
-            row["site"], row["country"], row["da"], row["dr"], row["traffic"],
-            row["general_price"], row["casino_price"], row["payment_method"],
-            row["tat"], row["type"], row["link_type"], row["source_file"],
-            row["sheet_name"], int(row["favorite"]), row["created_at"],
-        )
-        for _, row in prepared_df.iterrows()
-    ]
-
+    if prepared_df.empty: return 0
+    ids=[]
     with sqlite3.connect(DB_PATH) as conn:
-        conn.executemany(
-            """
-            DELETE FROM sites
-            WHERE lower(site)=lower(?) AND source_file=? AND sheet_name=?
-            """,
-            [(r[0], r[11], r[12]) for r in rows],
-        )
-        conn.executemany(
-            """
-            INSERT INTO sites(
-                site,country,da,dr,traffic,general_price,casino_price,
-                payment_method,tat,type,link_type,source_file,sheet_name,
-                favorite,created_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            rows,
-        )
+        for _,r in prepared_df.iterrows():
+            ex=conn.execute("SELECT id,manual_price,selling_price FROM sites WHERE lower(site)=lower(?) AND source_file=? AND sheet_name=?",(r["site"],r["source_file"],r["sheet_name"])).fetchone()
+            sell=r["selling_price"]
+            if ex and ex[1]: sell=ex[2]
+            if ex:
+                site_id=ex[0]; conn.execute("""UPDATE sites SET country=?,da=?,dr=?,traffic=?,general_price=?,casino_price=?,payment_method=?,tat=?,type=?,link_type=?,favorite=?,created_at=?,original_price=?,selling_price=?,markup_percent=?,casino_original_price=?,casino_selling_price=? WHERE id=?""",(r["country"],r["da"],r["dr"],r["traffic"],sell,r["casino_selling_price"],r["payment_method"],r["tat"],r["type"],r["link_type"],int(r["favorite"]),r["created_at"],r["original_price"],sell,float(r["markup_percent"]),r["casino_original_price"],r["casino_selling_price"],site_id))
+            else:
+                cur=conn.execute("""INSERT INTO sites(site,country,da,dr,traffic,general_price,casino_price,payment_method,tat,type,link_type,source_file,sheet_name,favorite,created_at,original_price,selling_price,markup_percent,manual_price,casino_original_price,casino_selling_price) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(r["site"],r["country"],r["da"],r["dr"],r["traffic"],sell,r["casino_selling_price"],r["payment_method"],r["tat"],r["type"],r["link_type"],r["source_file"],r["sheet_name"],int(r["favorite"]),r["created_at"],r["original_price"],sell,float(r["markup_percent"]),0,r["casino_original_price"],r["casino_selling_price"])); site_id=cur.lastrowid
+            ids.append(int(site_id))
         conn.commit()
+    for site_id in ids: sync_one_site_to_cloud(site_id)
+    return len(prepared_df)
 
-    return len(rows)
+
+def _looks_numeric_only(value: str) -> bool:
+    value = str(value or "").strip().replace(",", "")
+    return bool(re.fullmatch(r"[-+]?\d+(?:\.\d+)?", value))
 
 
 def safe_unique(df, column):
     if column not in df.columns:
         return ["All"]
+
     values = df[column].fillna("").astype(str).str.strip()
-    return ["All"] + sorted(values[values != ""].unique().tolist())
+    values = values[values != ""]
+
+    if column in {
+        "country", "payment_method", "link_type",
+        "sheet_name", "detected_niche", "type",
+    }:
+        values = values[~values.map(_looks_numeric_only)]
+
+    if column == "country":
+        # Country dropdown should contain readable country/location names only.
+        # Reject anything containing digits (e.g. 102.0, 50000, etc.).
+        values = values[
+            values.str.contains(r"[A-Za-z]", regex=True, na=False)
+            & ~values.str.contains(r"\d", regex=True, na=False)
+            & values.str.match(r"^[A-Za-zÀ-ÿ .,'()&/-]+$", na=False)
+            & (values.str.len() <= 80)
+        ]
+
+    elif column == "payment_method":
+        allowed_tokens = [
+            "after", "upfront", "advance", "negoti",
+            "paypal", "bank", "wise", "payoneer",
+            "crypto", "usdt", "stripe", "other",
+        ]
+        values = values[
+            values.str.lower().map(
+                lambda x: any(token in x for token in allowed_tokens)
+            )
+        ]
+
+    elif column == "link_type":
+        allowed_tokens = [
+            "dofollow", "do follow", "nofollow",
+            "no follow", "mixed", "sponsored",
+        ]
+        values = values[
+            values.str.lower().map(
+                lambda x: any(token in x for token in allowed_tokens)
+            )
+        ]
+
+    elif column == "sheet_name":
+        values = values[values.str.len() <= 120]
+
+    return ["All"] + sorted(
+        values.unique().tolist(),
+        key=lambda x: x.lower(),
+    )
 
 
 def site_selector(dataframe, label="Website select karein"):
@@ -1499,6 +2356,10 @@ Best regards,
     }
 
 
+def navigate_to(page_name: str) -> None:
+    st.session_state["nav_page"] = page_name
+
+
 # =========================================================
 # SESSION
 # =========================================================
@@ -1532,6 +2393,7 @@ with st.sidebar:
             "Dashboard",
             "Statistics",
             "Search Websites",
+            "Real Metrics Search",
             "Outreach Generator",
             "Client Outreach Generator",
             "Add New Site",
@@ -1542,6 +2404,10 @@ with st.sidebar:
             "Export Results",
             "Favorites",
             "Private Contacts",
+            "Reseller Private Details",
+            "Reseller Price Manager",
+            "Sheet Structure Scanner",
+            "Cloud Sync",
             "Admin Contact Vault",
             "Outreach Pipeline",
             "Our Team",
@@ -1628,13 +2494,22 @@ if page == "Dashboard":
 
     action1, action2, spacer = st.columns([1.1,1.1,5.8])
     with action1:
-        if st.button("Search Websites", type="primary", use_container_width=True):
-            st.session_state.nav_page = "Search Websites"
-            st.rerun()
+        st.button(
+            "Search Websites",
+            type="primary",
+            width="stretch",
+            on_click=navigate_to,
+            args=("Search Websites",),
+            key="dashboard_go_search",
+        )
     with action2:
-        if st.button("Export Results", use_container_width=True):
-            st.session_state.nav_page = "Export Results"
-            st.rerun()
+        st.button(
+            "Export Results",
+            width="stretch",
+            on_click=navigate_to,
+            args=("Export Results",),
+            key="dashboard_go_export",
+        )
 
     c1, c2, c3, c4 = st.columns(4)
     cards = [
@@ -1670,7 +2545,7 @@ if page == "Dashboard":
         dr_bins = pd.cut(dr_numeric, bins=[-1,20,40,60,80,1000], labels=["0–20","21–40","41–60","61–80","81+"])
         st.bar_chart(dr_bins.value_counts().sort_index())
 
-    top_df = df.copy()
+    top_df = df[[c for c in df.columns if c in {"site","country","type","link_type","dr","general_price"}]].copy()
     top_df["_dr_num"] = pd.to_numeric(top_df.get("dr", pd.Series(index=top_df.index)), errors="coerce")
     top_df["_price_num"] = pd.to_numeric(top_df.get("general_price", pd.Series(index=top_df.index)), errors="coerce")
     top_df = top_df.sort_values(["_dr_num","_price_num"], ascending=[False,True]).head(7)
@@ -1695,137 +2570,93 @@ if page == "Dashboard":
 elif page == "Search Websites":
     st.header("Search Websites")
     st.caption(
-        "Fast search enabled — sirf selected page ke records table me render honge."
+        "Fast mode enabled — filters cached hain aur table sirf current page ke rows render karta hai."
     )
+
+    filter_options = get_filter_options(df)
 
     search = st.text_input(
         "Search website, country, niche or source file",
-        placeholder="Paste full URL or search: https://openskynews.net/  |  India  |  technology",
-    )
-    st.caption(
-        "Full URLs supported — http/https, www, paths and trailing slash are handled automatically."
+        placeholder="Paste URL or search: example.com | India | SaaS | technology",
+        key="fast_search_query",
     )
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
 
     with c1:
-        country = st.selectbox(
-            "🌍 Country",
-            safe_unique(df, "country"),
+        niche = st.selectbox(
+            "🎯 Niche",
+            filter_options["niche"],
+            key="fast_filter_niche",
         )
 
     with c2:
-        payment = st.selectbox(
-            "💳 Payment",
-            safe_unique(df, "payment_method"),
+        country = st.selectbox(
+            "🌍 Country",
+            filter_options["country"],
+            key="fast_filter_country",
         )
 
     with c3:
-        link_type = st.selectbox(
-            "🔗 Link Type",
-            safe_unique(df, "link_type"),
+        payment = st.selectbox(
+            "💳 Payment",
+            filter_options["payment"],
+            key="fast_filter_payment",
         )
 
     with c4:
-        sheet = st.selectbox(
-            "📄 Sheet",
-            safe_unique(df, "sheet_name"),
+        link_type = st.selectbox(
+            "🔗 Link Type",
+            filter_options["link_type"],
+            key="fast_filter_link_type",
         )
 
-    c5, c6, c7 = st.columns(3)
-
     with c5:
+        sheet = st.selectbox(
+            "📄 Sheet",
+            filter_options["sheet"],
+            key="fast_filter_sheet",
+        )
+
+    c6, c7, c8 = st.columns(3)
+
+    with c6:
         min_dr = st.number_input(
             "⭐ Minimum DR",
             min_value=0.0,
             value=0.0,
             step=1.0,
+            key="fast_filter_min_dr",
         )
 
-    with c6:
+    with c7:
         max_price = st.number_input(
             "💰 Maximum General Price",
             min_value=0.0,
             value=100000.0,
             step=1.0,
+            key="fast_filter_max_price",
         )
 
-    with c7:
+    with c8:
         page_size = st.selectbox(
             "📄 Rows per page",
             [25, 50, 100, 200],
             index=1,
+            key="fast_filter_page_size",
         )
 
-    filtered = df
-
-    if search.strip():
-        raw_query = search.strip().lower()
-        smart_query = normalize_search_query(raw_query)
-
-        # Search both the original text and the normalized domain.
-        # This supports:
-        # https://example.com/
-        # http://www.example.com/page
-        # www.example.com
-        # example.com
-        queries = [
-            value
-            for value in {raw_query, smart_query}
-            if value
-        ]
-
-        search_mask = pd.Series(
-            False,
-            index=filtered.index,
-        )
-
-        for query in queries:
-            search_mask = search_mask | (
-                filtered["_search_text"].str.contains(
-                    query,
-                    regex=False,
-                    na=False,
-                )
-            )
-
-        # Direct normalized domain match is checked too.
-        if "site" in filtered.columns and smart_query:
-            normalized_sites = (
-                filtered["site"]
-                .fillna("")
-                .astype(str)
-                .map(normalize_search_query)
-            )
-
-            search_mask = search_mask | (
-                normalized_sites == smart_query
-            )
-
-        filtered = filtered[search_mask]
-
-    if country != "All":
-        filtered = filtered[filtered["country"] == country]
-
-    if payment != "All":
-        filtered = filtered[
-            filtered["payment_method"] == payment
-        ]
-
-    if link_type != "All":
-        filtered = filtered[
-            filtered["link_type"] == link_type
-        ]
-
-    if sheet != "All":
-        filtered = filtered[
-            filtered["sheet_name"] == sheet
-        ]
-
-    filtered = filtered[
-        (filtered["_dr_num"].fillna(-1) >= min_dr)
-        & (filtered["_price_num"].fillna(0) <= max_price)
-    ]
+    filtered = fast_filter_sites(
+        df,
+        search,
+        niche,
+        country,
+        payment,
+        link_type,
+        sheet,
+        float(min_dr),
+        float(max_price),
+    )
 
     total_results = len(filtered)
     total_pages = max(
@@ -1839,6 +2670,7 @@ elif page == "Search Websites":
         max_value=total_pages,
         value=1,
         step=1,
+        key="fast_page_number",
     )
 
     start_row = (page_number - 1) * page_size
@@ -1847,45 +2679,43 @@ elif page == "Search Websites":
     visible_columns = [
         column
         for column in [
-            "id",
-            "site",
-            "country",
-            "da",
-            "dr",
-            "traffic",
-            "general_price",
-            "casino_price",
-            "payment_method",
-            "tat",
-            "type",
-            "link_type",
-            "source_file",
-            "sheet_name",
-            "favorite",
+            "id", "site", "detected_niche", "country",
+            "da", "dr", "traffic", "general_price",
+            "casino_price", "payment_method", "tat",
+            "type", "link_type", "source_file",
+            "sheet_name", "favorite",
         ]
         if column in filtered.columns
     ]
 
     page_df = filtered.iloc[start_row:end_row][visible_columns]
 
-    st.info(
-        f"🔎 {total_results:,} matching websites • "
-        f"Showing {start_row + 1 if total_results else 0:,}–{end_row:,} • "
-        f"Page {page_number}/{total_pages}"
+    i1, i2, i3 = st.columns(3)
+    i1.metric("Matching Sites", f"{total_results:,}")
+    i2.metric("Current Page", f"{page_number}/{total_pages}")
+    i3.metric(
+        "Showing",
+        f"{start_row + 1 if total_results else 0:,}–{end_row:,}"
     )
+
+    if niche == "All" and not filtered.empty and "detected_niche" in filtered.columns:
+        top_niches = filtered["detected_niche"].value_counts().head(8)
+        niche_text = "  •  ".join(
+            f"{name}: {count:,}" for name, count in top_niches.items()
+        )
+        st.caption("Auto-detected niches → " + niche_text)
 
     st.dataframe(
         page_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
-        height=560,
+        height=520,
     )
 
-    # ---------- Quick Row Actions ----------
     st.markdown("### ⚡ Quick Row Actions")
 
     if page_df.empty:
-        st.caption("Action ke liye is page par koi website available nahi hai.")
+        st.caption("Action ke liye current page par website available nahi hai.")
     else:
         action_options = {
             f"{row['site']} | ID {int(row['id'])}": int(row["id"])
@@ -1895,7 +2725,7 @@ elif page == "Search Websites":
         selected_action_label = st.selectbox(
             "Website select karein",
             list(action_options.keys()),
-            key="search_action_site",
+            key="fast_search_action_site",
         )
 
         selected_action_id = action_options[selected_action_label]
@@ -1909,40 +2739,32 @@ elif page == "Search Websites":
             else f"https://{selected_action_row['site']}"
         )
 
-        st.code(selected_domain, language=None)
-
         a1, a2, a3 = st.columns(3)
 
         with a1:
             st.link_button(
                 "🌐 Open Website",
                 selected_url,
-                use_container_width=True,
+                width="stretch",
             )
 
         with a2:
             is_favorite = bool(selected_action_row.get("favorite", 0))
-            favorite_text = (
-                "☆ Remove Favorite"
-                if is_favorite
-                else "⭐ Add Favorite"
-            )
+            favorite_text = "☆ Remove Favorite" if is_favorite else "⭐ Add Favorite"
 
             if st.button(
                 favorite_text,
-                use_container_width=True,
-                key="quick_favorite",
+                width="stretch",
+                key="fast_quick_favorite",
             ):
                 with sqlite3.connect(DB_PATH) as conn:
                     conn.execute(
                         "UPDATE sites SET favorite=? WHERE id=?",
-                        (
-                            0 if is_favorite else 1,
-                            selected_action_id,
-                        ),
+                        (0 if is_favorite else 1, selected_action_id),
                     )
                     conn.commit()
 
+                sync_one_site_to_cloud(int(selected_action_id))
                 refresh_sites()
                 st.success("Favorite status update ho gaya.")
                 st.rerun()
@@ -1952,20 +2774,21 @@ elif page == "Search Websites":
                 st.button(
                     "🗑️ Delete (Admin Only)",
                     disabled=True,
-                    use_container_width=True,
+                    width="stretch",
+                    key="fast_delete_disabled",
                 )
             else:
                 confirm_quick_delete = st.checkbox(
                     "Delete confirm",
-                    key="quick_delete_confirm",
+                    key="fast_quick_delete_confirm",
                 )
 
                 if st.button(
                     "🗑️ Delete Selected",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=not confirm_quick_delete,
-                    key="quick_delete",
+                    key="fast_quick_delete",
                 ):
                     with sqlite3.connect(DB_PATH) as conn:
                         conn.execute(
@@ -1974,13 +2797,13 @@ elif page == "Search Websites":
                         )
                         conn.commit()
 
+                    cloud_delete_site(int(selected_action_id))
                     refresh_sites()
                     st.success("Selected website delete ho gayi.")
                     st.rerun()
 
     export_columns = [
-        column
-        for column in df.columns
+        column for column in df.columns
         if not column.startswith("_")
     ]
 
@@ -1993,7 +2816,7 @@ elif page == "Search Websites":
         csv_data,
         "filtered_websites.csv",
         "text/csv",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -2003,70 +2826,219 @@ elif page == "Search Websites":
 elif page == "Import Excel":
     if require_admin():
         st.header("Import Excel or CSV")
-        uploaded_file = st.file_uploader(
-            "Choose Excel or CSV File",
-            type=["xlsx", "xlsm", "csv"],
-        )
-
+        st.caption("Auto-private reseller contacts + default 20% markup + cloud sync.")
+        uploaded_file=st.file_uploader("Choose Excel or CSV File",type=["xlsx","xlsm","csv"])
         if uploaded_file is not None:
             try:
-                filename = uploaded_file.name
-                lower_name = filename.lower()
-
-                if lower_name.endswith(".csv"):
-                    sheets = ["CSV"]
-                else:
-                    uploaded_file.seek(0)
-                    sheets = pd.ExcelFile(uploaded_file).sheet_names
-
+                filename=uploaded_file.name; lower=filename.lower(); private_total=0
+                sheets=["CSV"] if lower.endswith(".csv") else pd.ExcelFile(uploaded_file).sheet_names
                 st.success(f"✅ File loaded: {filename}")
-                selected_sheet = st.selectbox("📄 Select Excel Sheet / Tab", sheets)
-
+                selected_sheet=st.selectbox("📄 Select Excel Sheet / Tab",sheets)
+                scan_sheets=sheets
+                for sh in scan_sheets:
+                    uploaded_file.seek(0)
+                    raw=pd.read_csv(uploaded_file,header=None,dtype=str,on_bad_lines="skip") if sh=="CSV" else pd.read_excel(uploaded_file,sheet_name=sh,header=None,dtype=str)
+                    hr=find_header_row(raw); priv=detect_private_rows(raw,hr,filename,sh); private_total += save_private_rows(priv)
+                    mapped=""
+                    if hr is not None:
+                        cols=[clean_value(v) for v in raw.iloc[hr].tolist()]
+                        mapped=", ".join(f"{field}→{match_column(cols,aliases)}" for field,aliases in COLUMN_ALIASES.items() if match_column(cols,aliases) is not None)
+                    save_structure_report(filename,sh,hr,mapped,len(priv))
                 uploaded_file.seek(0)
-                if lower_name.endswith(".csv"):
-                    raw_df = pd.read_csv(uploaded_file, header=None, dtype=str, on_bad_lines="skip")
-                else:
-                    raw_df = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=None, dtype=str)
-
-                header_row = find_header_row(raw_df)
-
+                raw_df=pd.read_csv(uploaded_file,header=None,dtype=str,on_bad_lines="skip") if selected_sheet=="CSV" else pd.read_excel(uploaded_file,sheet_name=selected_sheet,header=None,dtype=str)
+                header_row=find_header_row(raw_df)
                 if header_row is None:
-                    st.error("Website/Site/URL/Domain header row nahi mili.")
-                    st.dataframe(raw_df.head(20), use_container_width=True)
+                    st.warning("Selected sheet website table nahi lagti; private scan save ho gaya.")
+                    st.info(f"🔒 Private rows protected: {private_total}")
                 else:
                     uploaded_file.seek(0)
-                    if lower_name.endswith(".csv"):
-                        imported_df = pd.read_csv(uploaded_file, header=header_row, dtype=str, on_bad_lines="skip")
-                    else:
-                        imported_df = pd.read_excel(uploaded_file, sheet_name=selected_sheet, header=header_row, dtype=str)
+                    imported_df=pd.read_csv(uploaded_file,header=header_row,dtype=str,on_bad_lines="skip") if selected_sheet=="CSV" else pd.read_excel(uploaded_file,sheet_name=selected_sheet,header=header_row,dtype=str)
+                    prepared_df=prepare_import_dataframe(imported_df.dropna(how="all"),filename,selected_sheet)
+                    a,b,c,d=st.columns(4); a.metric("Sheet",selected_sheet); b.metric("Rows",len(imported_df)); c.metric("Valid",len(prepared_df)); d.metric("Private",private_total)
+                    cols=[x for x in ["site","original_price","selling_price","markup_percent","sheet_name"] if x in prepared_df.columns]
+                    st.dataframe(prepared_df[cols].head(50),width="stretch",hide_index=True)
+                    confirm=st.checkbox("✅ Preview check kar li hai.")
+                    if st.button("📥 Import Selected Sheet",type="primary",width="stretch",disabled=not confirm):
+                        count=save_imported_sites(prepared_df); refresh_sites(); st.success(f"✅ {count:,} sites save/update • 🔒 {private_total} private rows • 💰 20% markup")
+            except Exception as exc: st.error(f"Import error: {type(exc).__name__}: {exc}")
 
-                    imported_df = imported_df.dropna(how="all")
-                    prepared_df = prepare_import_dataframe(imported_df, filename, selected_sheet)
-
-                    a, b, c = st.columns(3)
-                    a.metric("📄 Sheet", selected_sheet)
-                    b.metric("📋 Rows Read", f"{len(imported_df):,}")
-                    c.metric("🌐 Valid Websites", f"{len(prepared_df):,}")
-
-                    st.dataframe(prepared_df.head(50), use_container_width=True, hide_index=True, height=500)
-
-                    confirm = st.checkbox("✅ Preview check kar li hai.")
-                    if st.button(
-                        "📥 Import Selected Sheet into Database",
-                        type="primary",
-                        use_container_width=True,
-                        disabled=not confirm,
-                    ):
-                        count = save_imported_sites(prepared_df)
-                        refresh_sites()
-                        st.success(f"✅ {count:,} websites permanently save/update ho gayi hain.")
-                        st.balloons()
-            except Exception as exc:
-                st.error(f"Import error: {type(exc).__name__}: {exc}")
 
 
 # =========================================================
 # ADD
+
+# =========================================================
+# LIVE DR CHECKER
+# =========================================================
+elif page == "Real Metrics Search":
+    st.header("Real Metrics Search")
+    st.caption(
+        "Domain search karein — saved sheet metrics aur available Ahrefs live metrics ek jagah compare honge."
+    )
+
+    if not ahrefs_enabled():
+        st.error("AHREFS_API_KEY environment variable missing.")
+    else:
+        metric_query = st.text_input(
+            "🌐 Website / Domain",
+            placeholder="example.com  |  https://example.com/",
+            key="real_metrics_domain_search",
+        )
+
+        check_metrics = st.button(
+            "🔎 Check Real Metrics",
+            type="primary",
+            width="stretch",
+            key="check_real_metrics",
+        )
+
+        if check_metrics:
+            domain = normalize_domain(metric_query)
+
+            if not domain:
+                st.error("Valid domain likhein.")
+            else:
+                # Find matching site in current database, if present.
+                matched = df[
+                    df["site"]
+                    .fillna("")
+                    .astype(str)
+                    .map(normalize_domain)
+                    == domain
+                ]
+
+                saved_row = matched.iloc[0] if not matched.empty else None
+                saved_id = (
+                    int(saved_row["id"])
+                    if saved_row is not None and "id" in saved_row
+                    else None
+                )
+
+                saved_da = clean_value(saved_row.get("da", "")) if saved_row is not None else ""
+                saved_dr = clean_value(saved_row.get("dr", "")) if saved_row is not None else ""
+                saved_traffic = clean_value(saved_row.get("traffic", "")) if saved_row is not None else ""
+
+                st.session_state["metrics_domain"] = domain
+                st.session_state["metrics_saved_id"] = saved_id
+                st.session_state["metrics_saved_da"] = saved_da
+                st.session_state["metrics_saved_dr"] = saved_dr
+                st.session_state["metrics_saved_traffic"] = saved_traffic
+
+                # DR is checked independently so it can still work when paid traffic access is unavailable.
+                try:
+                    with st.spinner(f"Checking live DR for {domain}..."):
+                        dr_result = ahrefs_live_dr(domain)
+                    st.session_state["metrics_live_dr"] = dr_result.get("dr")
+                    st.session_state["metrics_dr_error"] = ""
+                    st.session_state["metrics_dr_warning"] = dr_result.get("warning", "")
+                except Exception as exc:
+                    st.session_state["metrics_live_dr"] = None
+                    st.session_state["metrics_dr_error"] = str(exc)
+                    st.session_state["metrics_dr_warning"] = ""
+
+                try:
+                    with st.spinner(f"Checking Ahrefs organic traffic for {domain}..."):
+                        traffic_result = ahrefs_live_traffic(domain)
+                    st.session_state["metrics_live_traffic"] = traffic_result.get("organic_traffic")
+                    st.session_state["metrics_live_keywords"] = traffic_result.get("organic_keywords")
+                    st.session_state["metrics_live_top3"] = traffic_result.get("organic_keywords_top3")
+                    st.session_state["metrics_traffic_error"] = ""
+                except Exception as exc:
+                    st.session_state["metrics_live_traffic"] = None
+                    st.session_state["metrics_live_keywords"] = None
+                    st.session_state["metrics_live_top3"] = None
+                    st.session_state["metrics_traffic_error"] = str(exc)
+
+        domain = st.session_state.get("metrics_domain")
+        if domain:
+            saved_id = st.session_state.get("metrics_saved_id")
+            saved_da = st.session_state.get("metrics_saved_da", "")
+            saved_dr = st.session_state.get("metrics_saved_dr", "")
+            saved_traffic = st.session_state.get("metrics_saved_traffic", "")
+            live_dr = st.session_state.get("metrics_live_dr")
+            live_traffic = st.session_state.get("metrics_live_traffic")
+            live_keywords = st.session_state.get("metrics_live_keywords")
+            live_top3 = st.session_state.get("metrics_live_top3")
+
+            st.markdown(f"### {domain}")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric(
+                "Live Ahrefs DR",
+                f"{float(live_dr):.1f}" if live_dr is not None else "-"
+            )
+            m2.metric(
+                "Live Organic Traffic",
+                f"{int(live_traffic):,}" if live_traffic is not None else "-"
+            )
+            m3.metric(
+                "Organic Keywords",
+                f"{int(live_keywords):,}" if live_keywords is not None else "-"
+            )
+            m4.metric(
+                "Top-3 Keywords",
+                f"{int(live_top3):,}" if live_top3 is not None else "-"
+            )
+
+            st.markdown("#### Saved / Sheet Metrics")
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Saved DA", saved_da or "-")
+            s2.metric("Saved DR", saved_dr or "-")
+            s3.metric("Saved Traffic", saved_traffic or "-")
+
+            st.caption(
+                "DA is a Moz metric. Moz API connected nahi hai, isliye DA yahan sheet/database value hi show hoti hai. "
+                "Live DR aur organic traffic Ahrefs se aate hain."
+            )
+
+            dr_error = st.session_state.get("metrics_dr_error", "")
+            traffic_error = st.session_state.get("metrics_traffic_error", "")
+            dr_warning = st.session_state.get("metrics_dr_warning", "")
+
+            if dr_warning:
+                st.warning(dr_warning)
+
+            if dr_error:
+                st.error(f"DR: {dr_error}")
+
+            if traffic_error:
+                st.warning(
+                    "Traffic live fetch nahi hua. " + traffic_error
+                    + " Saved Traffic upar compare ke liye available hai."
+                )
+
+            if saved_id is not None and st.session_state.get("admin_logged_in", False):
+                st.markdown("#### Save Verified Metrics")
+                b1, b2 = st.columns(2)
+
+                with b1:
+                    if st.button(
+                        "💾 Save Live DR",
+                        width="stretch",
+                        disabled=live_dr is None,
+                        key="save_real_live_dr",
+                    ):
+                        save_live_dr(saved_id, live_dr)
+                        refresh_sites()
+                        st.success("Live Ahrefs DR local + cloud me save ho gaya.")
+
+                with b2:
+                    if st.button(
+                        "💾 Save Live Traffic",
+                        width="stretch",
+                        disabled=live_traffic is None,
+                        key="save_real_live_traffic",
+                    ):
+                        save_live_traffic(saved_id, live_traffic)
+                        refresh_sites()
+                        st.success("Live organic traffic local + cloud me save ho gaya.")
+
+            elif saved_id is None:
+                st.info(
+                    "Ye domain current GP Site Finder database me nahi mila. Live metrics dekh sakte hain, "
+                    "lekin save karne ke liye pehle site database me add karein."
+                )
+
 # =========================================================
 # OUTREACH GENERATOR
 # =========================================================
@@ -2156,7 +3128,7 @@ elif page == "Outreach Generator":
     if st.button(
         "Generate Outreach Messages",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     ):
         if not website_url.strip():
             st.error("Website URL required hai.")
@@ -2237,7 +3209,7 @@ elif page == "Outreach Generator":
 
         if st.button(
             "Save Website to Pipeline",
-            use_container_width=True,
+            width="stretch",
             key="save_generated_to_pipeline",
         ):
             domain = generated["domain"]
@@ -2395,7 +3367,7 @@ elif page == "Client Outreach Generator":
     if st.button(
         "Generate Client Messages",
         type="primary",
-        use_container_width=True,
+        width="stretch",
         key="generate_client_outreach",
     ):
         if not client_website.strip():
@@ -2540,7 +3512,7 @@ elif page == "Add New Site":
                 contact_status = st.selectbox("Contact Status", ["New", "Contacted", "Negotiating", "Approved", "Rejected"])
             notes = st.text_area("Notes", placeholder="Guidelines, accepted niches, anchor text rules, editorial notes…", height=120)
 
-            submitted = st.form_submit_button("Save Website", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("Save Website", type="primary", width="stretch")
 
         if submitted:
             domain = normalize_domain(site)
@@ -2621,7 +3593,7 @@ elif page == "Edit Site":
                     link_type = st.text_input("🔗 Link Type", value=clean_value(row["link_type"]))
                     sheet_name = st.text_input("📄 Sheet Name", value=clean_value(row["sheet_name"]))
 
-                save = st.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
+                save = st.form_submit_button("💾 Save Changes", type="primary", width="stretch")
 
             if save:
                 domain = normalize_domain(site)
@@ -2644,6 +3616,7 @@ elif page == "Edit Site":
                             ),
                         )
                         conn.commit()
+                    sync_one_site_to_cloud(int(selected_id))
                     refresh_sites()
                     st.success("✅ Website update ho gayi.")
                     st.rerun()
@@ -2669,7 +3642,7 @@ elif page == "Edit Site":
                     current_status = clean_value(contact_row[3]) or "New"
                     e_status = st.selectbox("Contact Status", statuses, index=statuses.index(current_status) if current_status in statuses else 0)
                 e_notes = st.text_area("Notes", value=clean_value(contact_row[5]), height=110)
-                save_contact = st.form_submit_button("Save Outreach Contact", type="primary", use_container_width=True)
+                save_contact = st.form_submit_button("Save Outreach Contact", type="primary", width="stretch")
             if save_contact:
                 now = datetime.now().isoformat(timespec="seconds")
                 with sqlite3.connect(CONTACT_DB_PATH) as conn:
@@ -2699,12 +3672,13 @@ elif page == "Delete Site":
             if st.button(
                 "🗑️ Permanently Delete",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not confirm,
             ):
                 with sqlite3.connect(DB_PATH) as conn:
                     conn.execute("DELETE FROM sites WHERE id=?", (selected_id,))
                     conn.commit()
+                cloud_delete_site(int(selected_id))
                 refresh_sites()
                 st.success("✅ Website delete ho gayi.")
                 st.rerun()
@@ -2720,7 +3694,7 @@ elif page == "Favorites":
     if row is not None:
         current = bool(row["favorite"])
         button_text = "☆ Remove Favorite" if current else "⭐ Add to Favorites"
-        if st.button(button_text, use_container_width=True):
+        if st.button(button_text, width="stretch"):
             with sqlite3.connect(DB_PATH) as conn:
                 conn.execute(
                     "UPDATE sites SET favorite=? WHERE id=?",
@@ -2733,7 +3707,7 @@ elif page == "Favorites":
     favorites = df[df["favorite"] == 1].copy() if not df.empty else df
     favorites = favorites[[c for c in favorites.columns if not c.startswith("_")]]
     st.info(f"⭐ {len(favorites):,} favorite websites")
-    st.dataframe(favorites, use_container_width=True, hide_index=True, height=580)
+    st.dataframe(favorites, width="stretch", hide_index=True, height=580)
 
 
 # =========================================================
@@ -2774,7 +3748,7 @@ elif page == "Private Contacts":
                 )
                 quoted_price = st.text_input("💰 Quoted Price", value=existing[5] or "")
                 notes = st.text_area("📝 Notes", value=existing[6] or "", height=150)
-                save_contact = st.form_submit_button("💾 Save Contact", type="primary", use_container_width=True)
+                save_contact = st.form_submit_button("💾 Save Contact", type="primary", width="stretch")
 
             if save_contact:
                 with sqlite3.connect(CONTACT_DB_PATH) as conn:
@@ -2805,8 +3779,131 @@ elif page == "Private Contacts":
 
         contacts_df = load_contacts()
         st.markdown("### 📋 Saved Contacts")
-        st.dataframe(contacts_df, use_container_width=True, hide_index=True, height=400)
+        st.dataframe(contacts_df, width="stretch", hide_index=True, height=400)
 
+
+# =========================================================
+# RESELLER PRIVATE DETAILS
+# =========================================================
+elif page == "Reseller Private Details":
+    if require_admin():
+        st.header("Reseller Private Details")
+        srcs=safe_unique(df,"source_file"); selected=st.selectbox("Source / Reseller File",srcs)
+        if selected!="All":
+            pdf=pd.DataFrame()
+            if cloud_enabled():
+                try: pdf=cloud_fetch("reseller_private","*","source_file=eq."+urllib.parse.quote(selected,safe=""))
+                except Exception: pass
+            if pdf.empty:
+                with sqlite3.connect(RESELLER_PRIVATE_DB_PATH) as conn: pdf=pd.read_sql_query("SELECT * FROM reseller_private WHERE source_file=? ORDER BY sheet_name,id",conn,params=(selected,))
+            if pdf.empty: st.warning("Private details nahi milin.")
+            else:
+                for i,r in pdf.iterrows():
+                    value=clean_value(r.get("field_value","")); st.markdown(f"**{clean_value(r.get('sheet_name',''))} — {clean_value(r.get('field_name',''))}**"); st.code(value,language=None)
+                    m=re.search(r"\+?\d[\d\s().-]{7,}\d",value)
+                    if m: st.link_button("🟢 WhatsApp",whatsapp_url(m.group()),width="stretch")
+
+# =========================================================
+# RESELLER PRICE MANAGER
+# =========================================================
+elif page == "Reseller Price Manager":
+    if require_admin():
+        st.header("Reseller Price Manager")
+        selected_id,row=site_selector(df,"Website select karein")
+        if row is not None:
+            original=clean_value(row.get("original_price",row.get("general_price",""))); selling=clean_value(row.get("selling_price",row.get("general_price",""))); markup=float(row.get("markup_percent",DEFAULT_RESELLER_MARKUP) or DEFAULT_RESELLER_MARKUP); manual=bool(row.get("manual_price",False))
+            a,b,c,d=st.columns(4); a.metric("Original Price",original or "-"); b.metric("Markup",f"{markup:.1f}%"); c.metric("Selling Price",selling or "-"); d.metric("Mode","Manual" if manual else "Auto")
+            mp=st.number_input("Manual Selling Price",min_value=0.0,value=float(parse_price(selling) or 0),step=1.0)
+            c1,c2=st.columns(2)
+            with c1:
+                if st.button("Save Manual Price",type="primary",width="stretch"):
+                    with sqlite3.connect(DB_PATH) as conn: conn.execute("UPDATE sites SET selling_price=?,general_price=?,manual_price=1 WHERE id=?",(f"{mp:.2f}",f"{mp:.2f}",int(selected_id))); conn.commit()
+                    sync_one_site_to_cloud(int(selected_id)); refresh_sites(); st.rerun()
+            with c2:
+                if st.button("Reset to Auto Markup",width="stretch"):
+                    on=parse_price(original); auto=f"{on*(1+markup/100.0):.2f}" if on is not None else original
+                    with sqlite3.connect(DB_PATH) as conn: conn.execute("UPDATE sites SET selling_price=?,general_price=?,manual_price=0 WHERE id=?",(auto,auto,int(selected_id))); conn.commit()
+                    sync_one_site_to_cloud(int(selected_id)); refresh_sites(); st.rerun()
+            nm=st.number_input("Entire Sheet Markup %",min_value=0.0,max_value=500.0,value=markup,step=1.0)
+            if st.button("Apply Markup to Entire Sheet",width="stretch"): set_sheet_markup(clean_value(row.get("source_file","")),clean_value(row.get("sheet_name","")),nm); refresh_sites(); st.rerun()
+
+# =========================================================
+# SHEET STRUCTURE SCANNER
+# =========================================================
+elif page == "Sheet Structure Scanner":
+    if require_admin():
+        st.header("Sheet Structure Scanner")
+        sdf=pd.DataFrame()
+        if cloud_enabled():
+            try: sdf=cloud_fetch("sheet_structure")
+            except Exception: pass
+        if sdf.empty:
+            with sqlite3.connect(SHEET_STRUCTURE_DB_PATH) as conn: sdf=pd.read_sql_query("SELECT * FROM sheet_structure ORDER BY updated_at DESC",conn)
+        st.dataframe(sdf,width="stretch",hide_index=True,height=620) if not sdf.empty else st.info("No structure reports yet.")
+
+# =========================================================
+# CLOUD SYNC
+# =========================================================
+elif page == "Cloud Sync":
+    if require_admin():
+        st.header("Cloud Sync")
+        st.caption("Desktop ↔ Supabase ↔ Streamlit central database")
+
+        if not cloud_enabled():
+            st.error("Supabase connection settings missing.")
+        else:
+            st.success("✅ Supabase configured")
+
+            if st.button("Test Cloud Connection", width="stretch"):
+                try:
+                    st.success(f"Cloud rows: {len(load_cloud_sites()):,}")
+                except Exception as exc:
+                    st.error(str(exc))
+
+            st.warning("Initial sync local gp_sites ko cloud gp_sites me replace karega.")
+            ok = st.checkbox("I confirm initial local → cloud sync")
+
+            if st.button(
+                "☁️ Sync Local Sites to Supabase",
+                type="primary",
+                width="stretch",
+                disabled=not ok,
+            ):
+                try:
+                    progress = st.progress(0)
+                    status = st.empty()
+
+                    def update_progress(done, total):
+                        pct = int((done / total) * 100) if total else 100
+                        progress.progress(min(pct, 100))
+                        status.info(f"Uploading: {done:,} / {total:,} sites ({pct}%)")
+
+                    with st.spinner("Fast batch sync chal rahi hai..."):
+                        count = fast_sync_local_sites_to_cloud(
+                            progress_callback=update_progress,
+                            batch_size=250,
+                        )
+
+                    progress.progress(100)
+                    status.success(f"✅ Sites complete: {count:,}")
+
+                    # These are much smaller tables, so sync them after sites.
+                    try:
+                        private_count = sync_reseller_private_to_cloud()
+                    except Exception:
+                        private_count = 0
+                    try:
+                        settings_count = sync_reseller_settings_to_cloud()
+                    except Exception:
+                        settings_count = 0
+
+                    refresh_sites()
+                    st.success(
+                        f"✅ Cloud sync complete — {count:,} sites, "
+                        f"{private_count:,} private rows, {settings_count:,} reseller settings."
+                    )
+                except Exception as exc:
+                    st.error(f"Sync error: {type(exc).__name__}: {exc}")
 
 # =========================================================
 # ADMIN CONTACT VAULT
@@ -2879,7 +3976,7 @@ elif page == "Admin Contact Vault":
             save_contact = st.form_submit_button(
                 "Save Private Contact",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
 
         if save_contact:
@@ -2916,7 +4013,7 @@ elif page == "Admin Contact Vault":
             ]
             st.dataframe(
                 vault_df[[c for c in show_cols if c in vault_df.columns]],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=390,
             )
@@ -3003,7 +4100,7 @@ elif page == "Admin Contact Vault":
                 update_contact = st.form_submit_button(
                     "Update Private Contact",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             if update_contact:
@@ -3035,7 +4132,7 @@ elif page == "Admin Contact Vault":
             if st.button(
                 "Delete Selected Private Contact",
                 disabled=not delete_ok,
-                use_container_width=True,
+                width="stretch",
             ):
                 delete_admin_private_contact(int(selected["id"]))
                 st.success("Private contact delete ho gaya.")
@@ -3046,7 +4143,7 @@ elif page == "Admin Contact Vault":
                 vault_df.to_csv(index=False).encode("utf-8-sig"),
                 "gp_site_finder_admin_private_contacts.csv",
                 "text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
 
@@ -3181,7 +4278,7 @@ elif page == "Outreach Pipeline":
             save_outreach = st.form_submit_button(
                 "Save Outreach Record",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
 
         if save_outreach:
@@ -3234,7 +4331,7 @@ elif page == "Outreach Pipeline":
                     if c in visible_pipeline.columns
                 ]
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=500,
         )
@@ -3248,7 +4345,7 @@ elif page == "Outreach Pipeline":
             csv_pipeline,
             "gp_site_finder_outreach_pipeline.csv",
             "text/csv",
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -3342,7 +4439,7 @@ elif page == "Duplicate Finder":
             ].sort_values(
                 ["_domain_key", "id"]
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=560,
         )
@@ -3360,7 +4457,7 @@ elif page == "Duplicate Finder":
         st.markdown("### Selected Domain Records")
         st.dataframe(
             selected_duplicates[display_columns],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -3385,7 +4482,7 @@ elif page == "Duplicate Finder":
             if st.button(
                 "🧹 Keep One and Remove Extras",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not confirm_duplicates,
             ):
                 ids = selected_duplicates[
@@ -3432,7 +4529,7 @@ elif page == "Export Results":
         csv_bytes,
         "gp_site_finder_all_sites.csv",
         "text/csv",
-        use_container_width=True,
+        width="stretch",
     )
 
     excel_buffer = io.BytesIO()
@@ -3443,7 +4540,7 @@ elif page == "Export Results":
         excel_buffer.getvalue(),
         "gp_site_finder_all_sites.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -3512,7 +4609,7 @@ elif page == "Our Team":
                             if member_image.exists():
                                 st.image(
                                     str(member_image),
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
 
                         reports_to = str(
@@ -3586,7 +4683,7 @@ elif page == "Our Team":
                                     normalize_public_url(
                                         linkedin_value
                                     ),
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
 
                         with button_columns[1]:
@@ -3596,7 +4693,7 @@ elif page == "Our Team":
                                     normalize_public_url(
                                         website_value
                                     ),
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
 
     st.divider()
@@ -3666,7 +4763,7 @@ elif page == "Our Team":
                 submitted_team = st.form_submit_button(
                     "Save Team Member",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             team_picture = st.file_uploader(
@@ -3891,7 +4988,7 @@ elif page == "Our Team":
                     save_edit = st.form_submit_button(
                         "Save Team Profile Changes",
                         type="primary",
-                        use_container_width=True,
+                        width="stretch",
                     )
 
                 replacement_picture = st.file_uploader(
@@ -3969,7 +5066,7 @@ elif page == "Our Team":
                 if st.button(
                     "Delete Selected Team Member",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=not confirm_team_delete,
                 ):
                     remove_team_image(
@@ -4058,7 +5155,7 @@ elif page == "Contact Us":
             submitted = st.form_submit_button(
                 "Send Message",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not consent,
             )
 
@@ -4171,7 +5268,7 @@ elif page == "Contact Us":
             st.link_button(
                 "Email",
                 f"mailto:{profile_settings['email']}",
-                use_container_width=True,
+                width="stretch",
             )
 
         if profile_settings.get("website"):
@@ -4180,7 +5277,7 @@ elif page == "Contact Us":
                 normalize_public_url(
                     profile_settings["website"]
                 ),
-                use_container_width=True,
+                width="stretch",
             )
 
         if profile_settings.get("linkedin"):
@@ -4189,7 +5286,7 @@ elif page == "Contact Us":
                 normalize_public_url(
                     profile_settings["linkedin"]
                 ),
-                use_container_width=True,
+                width="stretch",
             )
 
         if profile_settings.get("location"):
@@ -4243,7 +5340,7 @@ elif page == "Contact Us":
 
             st.dataframe(
                 display_inbox,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=480,
             )
@@ -4295,7 +5392,7 @@ elif page == "Contact Us":
 
                 if st.button(
                     "Update Message Status",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     with sqlite3.connect(
                         CONTACT_US_DB_PATH
@@ -4324,7 +5421,7 @@ elif page == "Contact Us":
                 if st.button(
                     "Delete Message",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=not confirm_delete_message,
                 ):
                     with sqlite3.connect(
@@ -4351,7 +5448,7 @@ elif page == "Contact Us":
                 data=inbox_csv,
                 file_name="contact_inbox.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
     else:
         st.caption(
@@ -4374,7 +5471,7 @@ elif page == "My Profile / Contact":
         if PROFILE_IMAGE_PATH.exists():
             st.image(
                 str(PROFILE_IMAGE_PATH),
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.info("Profile picture abhi add nahi ki gayi.")
@@ -4485,7 +5582,7 @@ elif page == "My Profile / Contact":
             save_profile = st.form_submit_button(
                 "💾 Save Profile Information",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
 
         profile_picture = st.file_uploader(
@@ -4517,7 +5614,7 @@ elif page == "My Profile / Contact":
             if st.button(
                 "🖼️ Save New Profile Picture",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             ):
                 try:
                     save_profile_image(profile_picture)
@@ -4538,14 +5635,14 @@ elif page == "Admin Login":
 
     if st.session_state.admin_logged_in:
         st.success("✅ Admin already logged in.")
-        if st.button("🔒 Logout", use_container_width=True):
+        if st.button("🔒 Logout", width="stretch"):
             st.session_state.admin_logged_in = False
             st.rerun()
     else:
         username = st.text_input("Username", value="admin")
         password = st.text_input("Password", type="password")
 
-        if st.button("🔓 Login", type="primary", use_container_width=True):
+        if st.button("🔓 Login", type="primary", width="stretch"):
             auth = json.loads(AUTH_PATH.read_text(encoding="utf-8"))
             password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
 
@@ -4581,7 +5678,7 @@ elif page == "Backup & Restore":
             backup_bytes,
             backup_name,
             "application/zip",
-            use_container_width=True,
+            width="stretch",
             type="primary",
         )
 
@@ -4610,7 +5707,7 @@ elif page == "Backup & Restore":
                 restore_zip is None
                 or not confirm_restore
             ),
-            use_container_width=True,
+            width="stretch",
         ):
             ok, message = restore_database_backup(
                 restore_zip
@@ -4637,6 +5734,8 @@ elif page == "Settings":
     st.write(f"Outreach pipeline DB: `{OUTREACH_DB_PATH}`")
     st.write(f"Admin private contacts DB: `{ADMIN_CONTACTS_DB_PATH}`")
     st.write(f"Total records: `{len(df):,}`")
+    st.write(f"Supabase Live Sync: `{'ON' if cloud_enabled() else 'OFF'}`")
+    st.write("Startup mode: `FAST LOCAL-FIRST`")
     st.write(f"Profile settings: `{PROFILE_DATA_PATH}`")
     st.caption(
         "Name, number, email, website, LinkedIn aur picture "
@@ -4667,7 +5766,7 @@ elif page == "Settings":
                 if st.button(
                     "Save Profile Picture",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     key="save_settings_profile_picture",
                 ):
                     try:
@@ -4682,7 +5781,7 @@ elif page == "Settings":
             if HERO_IMAGE_PATH.exists():
                 st.image(
                     str(HERO_IMAGE_PATH),
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.caption(
@@ -4699,7 +5798,7 @@ elif page == "Settings":
                 if st.button(
                     "Save Dashboard Image",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     key="save_settings_hero_picture",
                 ):
                     try:
@@ -4712,7 +5811,7 @@ elif page == "Settings":
             if HERO_IMAGE_PATH.exists():
                 if st.button(
                     "Remove Dashboard Image / Use Live Data Visual",
-                    use_container_width=True,
+                    width="stretch",
                     key="remove_hero_picture",
                 ):
                     try:
@@ -4755,7 +5854,7 @@ elif page == "Settings":
                 quick_save = st.form_submit_button(
                     "Save Contact Details",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             if quick_save:
