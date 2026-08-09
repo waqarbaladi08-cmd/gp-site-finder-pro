@@ -56,7 +56,7 @@ def _secret_or_env(name: str) -> str:
 
 SUPABASE_URL = _secret_or_env("SUPABASE_URL").rstrip("/")
 SUPABASE_SECRET_KEY = _secret_or_env("SUPABASE_SECRET_KEY")
-AHREFS_API_KEY = str(os.getenv("AHREFS_API_KEY", ""))
+AHREFS_API_KEY = _secret_or_env("AHREFS_API_KEY")
 
 
 # =========================================================
