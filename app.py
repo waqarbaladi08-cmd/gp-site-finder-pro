@@ -1271,17 +1271,49 @@ def load_contacts() -> pd.DataFrame:
 # HELPERS
 # =========================================================
 COLUMN_ALIASES = {
-    "site": ["site", "site name", "website", "website name", "website url", "site url", "url", "domain", "domain name"],
-    "country": ["country", "location", "region", "traffic country", "top traffic country"],
-    "da": ["da", "domain authority", "moz da", "web da"],
-    "dr": ["dr", "domain rating", "ahrefs dr", "web dr"],
-    "traffic": ["traffic", "monthly traffic", "organic traffic", "ahrefs traffic", "visits"],
-    "general_price": ["price", "general price", "guest post price", "gp price", "cost", "amount"],
+    "site": [
+        "site", "sites", "site name", "website", "websites", "website name",
+        "website url", "websites url", "site url", "url", "urls",
+        "domain", "domains", "domain name", "domain names", "web", "web url",
+        "guest post sites url", "guest post site url"
+    ],
+    "country": [
+        "country", "countries", "location", "region", "geo",
+        "traffic country", "top traffic country"
+    ],
+    "da": [
+        "da", "domain authority", "moz da", "moz domain authority", "web da"
+    ],
+    "dr": [
+        "dr", "domain rating", "ahrefs dr", "ahrefs domain rating", "web dr"
+    ],
+    "traffic": [
+        "traffic", "monthly traffic", "mothly traffic", "organic traffic",
+        "ahrefs traffic", "web traffic", "domain traffic", "visits",
+        "monthly visits"
+    ],
+    "general_price": [
+        "price", "general price", "guest post price", "gp price", "cost",
+        "amount", "usd", "price in $", "price $", "price dollar",
+        "pkr", "price pkr", "gp pkr", "gp usd", "lt pkr", "lt usd"
+    ],
     "casino_price": ["casino price", "gambling price", "casino"],
-    "payment_method": ["payment", "payment method", "payment terms", "pay method"],
-    "tat": ["tat", "turnaround time", "delivery time", "publish time"],
-    "type": ["type", "niche", "category", "website niche"],
-    "link_type": ["link type", "dofollow", "nofollow", "do follow", "no follow"],
+    "payment_method": [
+        "payment", "payment method", "payment terms", "pay method",
+        "pay mthod", "pay terms"
+    ],
+    "tat": [
+        "tat", "turnaround time", "turn around time", "delivery time",
+        "publish time", "turnaround", "time"
+    ],
+    "type": [
+        "type", "niche", "category", "website niche", "site type",
+        "niche / type", "niche type"
+    ],
+    "link_type": [
+        "link type", "links", "web links", "dofollow", "nofollow",
+        "do follow", "no follow", "dofollow links"
+    ],
 }
 
 
@@ -1419,12 +1451,178 @@ def normalize_domain(value) -> str:
     return match.group(0).lower() if match else ""
 
 
-def find_header_row(raw_df: pd.DataFrame):
-    for row_index in range(min(40, len(raw_df))):
-        values = [clean_heading(v) for v in raw_df.iloc[row_index].tolist()]
-        if any(value in COLUMN_ALIASES["site"] for value in values):
-            return row_index
+def _header_token(value):
+    s = clean_heading(value)
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def _header_field(value):
+    s = _header_token(value)
+    if not s:
+        return None
+
+    patterns = [
+        ("site", r"\b(websites?|sites?|domains?|urls?)\b"),
+        ("da", r"(^|\s)da($|\s)|domain authority"),
+        ("dr", r"(^|\s)dr($|\s)|domain rating|ahrefs dr"),
+        ("traffic", r"traffic|monthly visits|organic visits"),
+        ("casino_price", r"(casino|gambling).*(price|pkr|usd)|(price|pkr|usd).*(casino|gambling)"),
+        ("general_price", r"\bgp\s*(pkr|usd)\b|\blt\s*(pkr|usd)\b|guest post.*(price|pkr|usd)|\bprice\b|\bcost\b"),
+        ("payment_method", r"payment|pay method|pay terms|payment mode|payment method|paymode|paymnt|pay ment|method of payment"),
+        ("tat", r"(^|\s)tat($|\s)|turnaround|turn around|delivery time"),
+        ("link_type", r"(^|\s)links?($|\s)|link type|dofollow|nofollow"),
+        ("type", r"niche|category|site type"),
+    ]
+
+    for field, pattern in patterns:
+        if re.search(pattern, s):
+            return field
     return None
+
+
+def find_header_row(raw_df: pd.DataFrame):
+    """Find the real table header even when title/guideline rows are above it."""
+    if raw_df is None or raw_df.empty:
+        return None
+
+    best_row, best_score = None, -1
+    for row_index in range(min(100, len(raw_df))):
+        fields = {
+            f for f in (_header_field(v) for v in raw_df.iloc[row_index].tolist())
+            if f
+        }
+        if "site" not in fields:
+            continue
+
+        score = 10 + len(fields) * 3
+        if "general_price" in fields:
+            score += 4
+        if {"da", "dr", "traffic"} & fields:
+            score += 2
+
+        if score > best_score:
+            best_row, best_score = row_index, score
+
+    return best_row
+
+
+def _smart_match(columns, field):
+    exact = match_column(columns, COLUMN_ALIASES.get(field, []))
+    if exact is not None:
+        return exact
+
+    for col in columns:
+        if _header_field(col) == field:
+            return col
+    return None
+
+
+def infer_headerless_schema(raw_df: pd.DataFrame):
+    """
+    Some reseller sheets (e.g. Business) have no header row.
+    If the first non-empty rows clearly begin with domains and columns follow
+    the common reseller layout, create safe synthetic headers.
+    """
+    if raw_df is None or raw_df.empty:
+        return None
+
+    first_data_row = None
+    for idx in range(min(25, len(raw_df))):
+        first_cell = clean_value(raw_df.iloc[idx, 0] if raw_df.shape[1] else "")
+        if normalize_domain(first_cell):
+            first_data_row = idx
+            break
+
+    if first_data_row is None:
+        return None
+
+    # Need at least two domain rows close together to avoid false positives.
+    domain_rows = 0
+    for idx in range(first_data_row, min(first_data_row + 8, len(raw_df))):
+        if normalize_domain(raw_df.iloc[idx, 0] if raw_df.shape[1] else ""):
+            domain_rows += 1
+
+    if domain_rows < 2:
+        return None
+
+    col_count = raw_df.shape[1]
+
+    # Common GoLinkBuild order:
+    # site, niche, DA, DR, traffic, age, PKR price, USD price,
+    # payment, TAT/links, link type/TAT, sample...
+    headers = []
+    positional = {
+        0: "Website",
+        1: "Niche",
+        2: "DA",
+        3: "DR",
+        4: "Traffic",
+        5: "Age",
+        6: "Price",
+        7: "USD",
+        8: "Payment",
+        9: "TAT",
+        10: "Link Type",
+        11: "Sample",
+        12: "Extra",
+    }
+
+    for i in range(col_count):
+        headers.append(positional.get(i, f"Extra {i+1}"))
+
+    data = raw_df.iloc[first_data_row:].copy()
+    data.columns = headers
+    data = data.dropna(how="all")
+    return data
+
+
+def read_import_sheet(uploaded_file, selected_sheet: str, lower_name: str):
+    """
+    Return (raw_df, imported_df, header_row, mode).
+    mode = detected_header | inferred_headerless | no_table
+    """
+    uploaded_file.seek(0)
+
+    if lower_name.endswith(".csv"):
+        raw_df = pd.read_csv(
+            uploaded_file,
+            header=None,
+            dtype=str,
+            on_bad_lines="skip",
+        )
+    else:
+        raw_df = pd.read_excel(
+            uploaded_file,
+            sheet_name=selected_sheet,
+            header=None,
+            dtype=str,
+        )
+
+    header_row = find_header_row(raw_df)
+
+    if header_row is not None:
+        uploaded_file.seek(0)
+        if lower_name.endswith(".csv"):
+            imported_df = pd.read_csv(
+                uploaded_file,
+                header=header_row,
+                dtype=str,
+                on_bad_lines="skip",
+            )
+        else:
+            imported_df = pd.read_excel(
+                uploaded_file,
+                sheet_name=selected_sheet,
+                header=header_row,
+                dtype=str,
+            )
+        return raw_df, imported_df.dropna(how="all"), header_row, "detected_header"
+
+    inferred_df = infer_headerless_schema(raw_df)
+    if inferred_df is not None and not inferred_df.empty:
+        return raw_df, inferred_df, None, "inferred_headerless"
+
+    return raw_df, pd.DataFrame(), None, "no_table"
 
 
 def match_column(columns, aliases):
@@ -1519,24 +1717,164 @@ def set_sheet_markup(source_file, sheet_name, markup):
         cloud_upsert_rows("reseller_settings",[{"source_file":source_file,"sheet_name":sheet_name,"markup_percent":float(markup),"updated_at":now}],"source_file,sheet_name")
         for site_id in ids: sync_one_site_to_cloud(site_id)
 
-PRIVATE_KEYWORDS=["owner","founder","ceo","manager","publisher","admin","contact","phone","mobile","whatsapp","email","telegram","skype","linkedin","paypal","payoneer","wise","stripe","usdt","jazzcash","easypaisa","sadapay","nayapay","bank","binance","account","payment","iban"]
+PRIVATE_KEYWORDS = [
+    "owner","founder","ceo","manager","publisher","admin","contact",
+    "phone","mobile","whatsapp","email","telegram","skype","linkedin",
+    "facebook","fb","messenger","paypal","payoneer","wise","stripe",
+    "usdt","jazzcash","easypaisa","sadapay","nayapay","bank","binance",
+    "account","payment","iban"
+]
+
+PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)")
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", re.I)
+URL_RE = re.compile(r"https?://[^\s|,;]+", re.I)
+
+SOCIAL_PATTERNS = {
+    "Facebook": re.compile(r"(?:https?://)?(?:www\.)?(?:facebook\.com|fb\.com)/[^\s|,;]+", re.I),
+    "LinkedIn": re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/[^\s|,;]+", re.I),
+    "Telegram": re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/[^\s|,;]+", re.I),
+    "WhatsApp": re.compile(r"(?:https?://)?(?:wa\.me|api\.whatsapp\.com)/[^\s|,;]+", re.I),
+    "Instagram": re.compile(r"(?:https?://)?(?:www\.)?instagram\.com/[^\s|,;]+", re.I),
+}
+
+
+def _looks_like_seo_data_row(values):
+    """Avoid treating DA/DR/Traffic/Price rows as phone/contact rows."""
+    joined = " | ".join(values).lower()
+
+    # Strong website-table signals.
+    if any(token in joined for token in [
+        "dofollow", "nofollow", "traffic", "guest post",
+        "instant", "hours", "hour", "pkr", "usd"
+    ]):
+        domains = sum(1 for v in values if normalize_domain(v))
+        if domains >= 1:
+            return True
+
+    # Domain + several numeric metric-like cells is almost certainly a site row.
+    domains = sum(1 for v in values if normalize_domain(v))
+    numericish = sum(
+        1 for v in values
+        if re.fullmatch(r"\s*\d+(?:\.\d+)?(?:k|m)?(?:\s*(?:usa|uk|ca))?\s*", v, re.I)
+    )
+    return domains >= 1 and numericish >= 2
+
+
+def _extract_contact_items(joined):
+    items = []
+
+    emails = list(dict.fromkeys(EMAIL_RE.findall(joined)))
+    for email in emails:
+        items.append(("Email", email))
+
+    # Explicit social/profile links.
+    for kind, pattern in SOCIAL_PATTERNS.items():
+        for match in list(dict.fromkeys(pattern.findall(joined))):
+            url = match
+            if not url.lower().startswith(("http://", "https://")):
+                url = "https://" + url
+            items.append((kind, url))
+
+    # Generic URLs that are clearly contact/social pages.
+    for url in list(dict.fromkeys(URL_RE.findall(joined))):
+        low = url.lower()
+        if any(host in low for host in [
+            "facebook.com", "fb.com", "linkedin.com", "t.me",
+            "telegram.me", "wa.me", "whatsapp.com", "instagram.com"
+        ]):
+            continue
+        if any(word in low for word in ["/contact", "/about", "/team", "/author"]):
+            items.append(("Contact URL", url))
+
+    # Phones: only keep plausible contact numbers.
+    for phone in list(dict.fromkeys(PHONE_RE.findall(joined))):
+        digits = re.sub(r"\D", "", phone)
+        if 9 <= len(digits) <= 15:
+            items.append(("WhatsApp / Phone", phone.strip()))
+
+    return items
+
 
 def detect_private_rows(raw_df, header_row, source_file, sheet_name):
-    sn=clean_heading(sheet_name)
-    if any(x in sn for x in ["scammer","scam alert","blacklist","reported"]): return []
-    if header_row is not None: scan_limit=min(header_row,len(raw_df))
+    """
+    Improved private-contact scanner:
+    - detects WhatsApp/phone, email, Facebook, LinkedIn, Telegram, Instagram
+    - ignores normal SEO rows with DA/DR/traffic/price numbers
+    - scans title/contact areas and a small section after header for admin/contact blocks
+    """
+    sn = clean_heading(sheet_name)
+
+    if any(x in sn for x in ["scammer", "scam alert", "blacklist", "reported"]):
+        return []
+
+    # Scan pre-header area plus up to 40 rows after header.
+    if header_row is not None:
+        scan_start = 0
+        scan_limit = min(len(raw_df), header_row + 40)
     else:
-        if not any(x in sn for x in ["intro","contact","team","payment","about"]): return []
-        scan_limit=min(60,len(raw_df))
-    out=[]
-    for idx in range(scan_limit):
-        vals=[clean_value(v) for v in raw_df.iloc[idx].tolist()]; vals=[v for v in vals if v]
-        if not vals: continue
-        joined=" | ".join(vals); low=joined.lower()
-        phone=bool(re.search(r"\+?\d[\d\s().-]{7,}\d",joined)); email=bool(re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}",joined,re.I)); key=any(k in low for k in PRIVATE_KEYWORDS)
-        if not (phone or email or key): continue
-        kind="Payment" if ("payment" in low or any(k in low for k in ["paypal","payoneer","wise","stripe","jazzcash","easypaisa","bank","binance","usdt"])) else ("WhatsApp / Phone" if phone or any(k in low for k in ["whatsapp","phone","mobile"]) else ("Email" if email else "Team / Contact"))
-        out.append({"source_file":source_file,"sheet_name":sheet_name,"field_name":f"{kind} • Row {idx+1}","field_value":joined})
+        scan_start = 0
+        scan_limit = min(len(raw_df), 100)
+
+    out = []
+    seen = set()
+
+    for idx in range(scan_start, scan_limit):
+        vals = [clean_value(v) for v in raw_df.iloc[idx].tolist()]
+        vals = [v for v in vals if v]
+        if not vals:
+            continue
+
+        if _looks_like_seo_data_row(vals):
+            continue
+
+        joined = " | ".join(vals)
+        low = joined.lower()
+
+        extracted = _extract_contact_items(joined)
+
+        # If row has explicit contact keywords but no extractable item,
+        # still preserve it as a private note.
+        has_contact_keyword = any(k in low for k in PRIVATE_KEYWORDS)
+
+        if extracted:
+            for kind, value in extracted:
+                key = (kind.lower(), value.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({
+                    "source_file": source_file,
+                    "sheet_name": sheet_name,
+                    "field_name": f"{kind} • Row {idx+1}",
+                    "field_value": value,
+                })
+
+        elif has_contact_keyword:
+            # Don't save header-only rows such as "Payment | WhatsApp | Facebook".
+            meaningful = [
+                v for v in vals
+                if not any(
+                    clean_heading(v) == clean_heading(k)
+                    for k in ["payment", "whatsapp", "facebook", "email", "phone",
+                              "linkedin", "telegram", "contact", "admin"]
+                )
+            ]
+            if meaningful:
+                kind = "Payment" if any(k in low for k in [
+                    "paypal","payoneer","wise","stripe","jazzcash","easypaisa",
+                    "bank","binance","usdt","iban"
+                ]) else "Team / Contact"
+
+                key = (kind.lower(), joined.lower())
+                if key not in seen:
+                    seen.add(key)
+                    out.append({
+                        "source_file": source_file,
+                        "sheet_name": sheet_name,
+                        "field_name": f"{kind} • Row {idx+1}",
+                        "field_value": joined,
+                    })
+
     return out
 
 def save_private_rows(rows):
@@ -1558,6 +1896,28 @@ def save_structure_report(source_file,sheet_name,header_row,mapped_fields,privat
         conn.execute("""INSERT INTO sheet_structure(source_file,sheet_name,header_row,status,mapped_fields,private_count,updated_at) VALUES(?,?,?,?,?,?,?)
         ON CONFLICT(source_file,sheet_name) DO UPDATE SET header_row=excluded.header_row,status=excluded.status,mapped_fields=excluded.mapped_fields,private_count=excluded.private_count,updated_at=excluded.updated_at""",(source_file,sheet_name,(header_row+1 if header_row is not None else None),status,mapped_fields,int(private_count),now)); conn.commit()
     if cloud_enabled(): cloud_upsert_rows("sheet_structure",[{"source_file":source_file,"sheet_name":sheet_name,"header_row":(header_row+1 if header_row is not None else None),"status":status,"mapped_fields":mapped_fields,"private_count":int(private_count),"updated_at":now}],"source_file,sheet_name")
+
+def _infer_payment_column(df, columns):
+    """Fallback when reseller sheet has a strange/missing payment header."""
+    payment_words = {
+        "upfront", "after", "advance", "50% advance", "50 advance",
+        "before", "after publish", "after publication", "prepaid",
+        "postpaid", "paypal", "payoneer", "wise", "bank transfer",
+        "crypto", "usdt"
+    }
+    best_col, best_hits = None, 0
+    for col in columns:
+        hits = 0
+        for v in df[col].head(200).tolist():
+            s = clean_value(v).lower().strip()
+            if not s:
+                continue
+            if s in payment_words or any(w in s for w in ["upfront", "advance", "after publish", "paypal", "payoneer", "wise", "bank transfer"]):
+                hits += 1
+        if hits > best_hits:
+            best_col, best_hits = col, hits
+    return best_col if best_hits >= 2 else None
+
 
 def prepare_import_dataframe(uploaded_df, source_file, sheet_name):
     matched = {
@@ -1587,8 +1947,8 @@ def prepare_import_dataframe(uploaded_df, source_file, sheet_name):
             "tat": "",
             "type": "",
             "link_type": "",
-            "source_file": source_file,
-            "sheet_name": sheet_name,
+            "source_file": clean_value(source_file),
+            "sheet_name": clean_value(sheet_name),
             "favorite": 0,
             "created_at": now,
         }
@@ -1609,27 +1969,166 @@ def prepare_import_dataframe(uploaded_df, source_file, sheet_name):
     return pd.DataFrame(rows)
 
 
-def save_imported_sites(prepared_df):
-    if prepared_df.empty: return 0
-    ids=[]
+def save_imported_sites(prepared_df, cloud_batch_size: int = 1000):
+    """
+    FAST IMPORT:
+    - One SQLite transaction for the whole sheet.
+    - No per-row Supabase HTTP calls.
+    - Cloud rows are bulk-upserted in batches after local save.
+    """
+    if prepared_df.empty:
+        return 0
+
+    saved_ids = []
+
     with sqlite3.connect(DB_PATH) as conn:
-        for _,r in prepared_df.iterrows():
-            ex=conn.execute("SELECT id,manual_price,selling_price FROM sites WHERE lower(site)=lower(?) AND source_file=? AND sheet_name=?",(r["site"],r["source_file"],r["sheet_name"])).fetchone()
-            sell=r["selling_price"]
-            if ex and ex[1]: sell=ex[2]
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+
+        for _, r in prepared_df.iterrows():
+            ex = conn.execute(
+                """
+                SELECT id,manual_price,selling_price
+                FROM sites
+                WHERE lower(site)=lower(?)
+                  AND source_file=?
+                  AND sheet_name=?
+                """,
+                (r["site"], r["source_file"], r["sheet_name"]),
+            ).fetchone()
+
+            sell = r["selling_price"]
+            if ex and ex[1]:
+                sell = ex[2]
+
             if ex:
-                site_id=ex[0]; conn.execute("""UPDATE sites SET country=?,da=?,dr=?,traffic=?,general_price=?,casino_price=?,payment_method=?,tat=?,type=?,link_type=?,favorite=?,created_at=?,original_price=?,selling_price=?,markup_percent=?,casino_original_price=?,casino_selling_price=? WHERE id=?""",(r["country"],r["da"],r["dr"],r["traffic"],sell,r["casino_selling_price"],r["payment_method"],r["tat"],r["type"],r["link_type"],int(r["favorite"]),r["created_at"],r["original_price"],sell,float(r["markup_percent"]),r["casino_original_price"],r["casino_selling_price"],site_id))
+                site_id = int(ex[0])
+                conn.execute(
+                    """
+                    UPDATE sites SET
+                        country=?,da=?,dr=?,traffic=?,general_price=?,
+                        casino_price=?,payment_method=?,tat=?,type=?,
+                        link_type=?,favorite=?,created_at=?,original_price=?,
+                        selling_price=?,markup_percent=?,
+                        casino_original_price=?,casino_selling_price=?
+                    WHERE id=?
+                    """,
+                    (
+                        r["country"], r["da"], r["dr"], r["traffic"],
+                        sell, r["casino_selling_price"],
+                        r["payment_method"], r["tat"], r["type"],
+                        r["link_type"], int(r["favorite"]), r["created_at"],
+                        r["original_price"], sell, float(r["markup_percent"]),
+                        r["casino_original_price"],
+                        r["casino_selling_price"], site_id,
+                    ),
+                )
             else:
-                cur=conn.execute("""INSERT INTO sites(site,country,da,dr,traffic,general_price,casino_price,payment_method,tat,type,link_type,source_file,sheet_name,favorite,created_at,original_price,selling_price,markup_percent,manual_price,casino_original_price,casino_selling_price) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(r["site"],r["country"],r["da"],r["dr"],r["traffic"],sell,r["casino_selling_price"],r["payment_method"],r["tat"],r["type"],r["link_type"],r["source_file"],r["sheet_name"],int(r["favorite"]),r["created_at"],r["original_price"],sell,float(r["markup_percent"]),0,r["casino_original_price"],r["casino_selling_price"])); site_id=cur.lastrowid
-            ids.append(int(site_id))
+                cur = conn.execute(
+                    """
+                    INSERT INTO sites(
+                        site,country,da,dr,traffic,general_price,casino_price,
+                        payment_method,tat,type,link_type,source_file,sheet_name,
+                        favorite,created_at,original_price,selling_price,
+                        markup_percent,manual_price,casino_original_price,
+                        casino_selling_price
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        r["site"], r["country"], r["da"], r["dr"], r["traffic"],
+                        sell, r["casino_selling_price"], r["payment_method"],
+                        r["tat"], r["type"], r["link_type"], r["source_file"],
+                        r["sheet_name"], int(r["favorite"]), r["created_at"],
+                        r["original_price"], sell, float(r["markup_percent"]),
+                        0, r["casino_original_price"],
+                        r["casino_selling_price"],
+                    ),
+                )
+                site_id = int(cur.lastrowid)
+
+            saved_ids.append(site_id)
+
         conn.commit()
-    for site_id in ids: sync_one_site_to_cloud(site_id)
+
+    # Bulk cloud sync only once per batch instead of one HTTP request per website.
+    if cloud_enabled() and saved_ids:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+
+                for start in range(0, len(saved_ids), cloud_batch_size):
+                    batch_ids = saved_ids[start:start + cloud_batch_size]
+                    placeholders = ",".join("?" for _ in batch_ids)
+                    rows = conn.execute(
+                        f"SELECT * FROM sites WHERE id IN ({placeholders})",
+                        batch_ids,
+                    ).fetchall()
+
+                    payload = [
+                        _site_payload_from_dict(dict(row))
+                        for row in rows
+                    ]
+
+                    if payload:
+                        cloud_upsert_rows(
+                            "gp_sites",
+                            payload,
+                            on_conflict="id",
+                        )
+        except Exception as exc:
+            # Local import remains successful even if cloud is temporarily slow.
+            st.warning(
+                f"Local import complete, but cloud batch sync skipped: {exc}"
+            )
+
     return len(prepared_df)
 
 
 def _looks_numeric_only(value: str) -> bool:
     value = str(value or "").strip().replace(",", "")
     return bool(re.fullmatch(r"[-+]?\d+(?:\.\d+)?", value))
+
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def load_all_sheet_names() -> list:
+    """Fast complete sheet-name list without scanning the whole dataframe."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT TRIM(sheet_name)
+                FROM sites
+                WHERE sheet_name IS NOT NULL
+                  AND TRIM(sheet_name) <> ''
+                ORDER BY LOWER(TRIM(sheet_name))
+                """
+            ).fetchall()
+        values = [clean_value(r[0]) for r in rows if clean_value(r[0])]
+        return ["All"] + list(dict.fromkeys(values))
+    except Exception:
+        return ["All"]
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def load_all_source_files() -> list:
+    """Fast complete reseller/source-file list."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT TRIM(source_file)
+                FROM sites
+                WHERE source_file IS NOT NULL
+                  AND TRIM(source_file) <> ''
+                ORDER BY LOWER(TRIM(source_file))
+                """
+            ).fetchall()
+        values = [clean_value(r[0]) for r in rows if clean_value(r[0])]
+        return ["All"] + list(dict.fromkeys(values))
+    except Exception:
+        return ["All"]
 
 
 def safe_unique(df, column):
@@ -2573,6 +3072,15 @@ elif page == "Search Websites":
         "Fast mode enabled — filters cached hain aur table sirf current page ke rows render karta hai."
     )
 
+    if st.button(
+        "♻️ Refresh Sheets / Clear Cache",
+        key="refresh_search_cache",
+        help="Nayi imported sheets ya stale filter list ho to is button ko dabayein.",
+    ):
+        st.cache_data.clear()
+        st.success("Cache clear ho gaya. Fresh sheet/source list reload ho rahi hai.")
+        st.rerun()
+
     filter_options = get_filter_options(df)
 
     search = st.text_input(
@@ -2612,13 +3120,32 @@ elif page == "Search Websites":
         )
 
     with c5:
-        sheet = st.selectbox(
-            "📄 Sheet",
-            filter_options["sheet"],
-            key="fast_filter_sheet",
+        all_sheet_options = load_all_sheet_names()
+        sheet_search = st.text_input(
+            "🔎 Find Sheet",
+            placeholder="Type sheet name...",
+            key="sheet_name_search_box",
         )
 
-    c6, c7, c8 = st.columns(3)
+        if sheet_search.strip():
+            _q = sheet_search.strip().lower()
+            visible_sheet_options = [
+                x for x in all_sheet_options
+                if x == "All" or _q in x.lower()
+            ]
+            if len(visible_sheet_options) == 1:
+                visible_sheet_options = all_sheet_options
+        else:
+            visible_sheet_options = all_sheet_options
+
+        sheet = st.selectbox(
+            "📄 Source Sheet",
+            visible_sheet_options,
+            key="fast_filter_sheet",
+            help="Complete sheet list database se load hoti hai. Box me type karke sheet search bhi kar sakte hain.",
+        )
+
+    c6, c7, c8, c9 = st.columns(4)
 
     with c6:
         min_dr = st.number_input(
@@ -2646,6 +3173,13 @@ elif page == "Search Websites":
             key="fast_filter_page_size",
         )
 
+    with c9:
+        source_file_filter = st.selectbox(
+            "📁 Source File",
+            load_all_source_files(),
+            key="fast_filter_source_file",
+        )
+
     filtered = fast_filter_sites(
         df,
         search,
@@ -2657,6 +3191,12 @@ elif page == "Search Websites":
         float(min_dr),
         float(max_price),
     )
+
+    if source_file_filter != "All" and "source_file" in filtered.columns:
+        filtered = filtered[
+            filtered["source_file"].fillna("").astype(str).str.strip()
+            == source_file_filter
+        ]
 
     total_results = len(filtered)
     total_pages = max(
@@ -2676,19 +3216,35 @@ elif page == "Search Websites":
     start_row = (page_number - 1) * page_size
     end_row = min(start_row + page_size, total_results)
 
+    requested_visible_columns = [
+        "id", "site", "source_file", "sheet_name",
+        "detected_niche", "country",
+        "da", "dr", "traffic", "general_price",
+        "casino_price", "payment_method", "tat",
+        "type", "link_type", "favorite",
+    ]
+
+    # Keep column order but remove duplicates safely.
     visible_columns = [
         column
-        for column in [
-            "id", "site", "detected_niche", "country",
-            "da", "dr", "traffic", "general_price",
-            "casino_price", "payment_method", "tat",
-            "type", "link_type", "source_file",
-            "sheet_name", "favorite",
-        ]
+        for column in dict.fromkeys(requested_visible_columns)
         if column in filtered.columns
     ]
 
-    page_df = filtered.iloc[start_row:end_row][visible_columns]
+    if not st.session_state.get("admin_logged_in", False):
+        _private_price_cols = {
+            "original_price",
+            "markup_percent",
+            "manual_price",
+            "casino_original_price",
+        }
+        visible_columns = [
+            c for c in visible_columns
+            if c not in _private_price_cols
+        ]
+
+    page_df = filtered.iloc[start_row:end_row][visible_columns].copy()
+    page_df = page_df.loc[:, ~page_df.columns.duplicated()]
 
     i1, i2, i3 = st.columns(3)
     i1.metric("Matching Sites", f"{total_results:,}")
@@ -2717,10 +3273,21 @@ elif page == "Search Websites":
     if page_df.empty:
         st.caption("Action ke liye current page par website available nahi hai.")
     else:
-        action_options = {
-            f"{row['site']} | ID {int(row['id'])}": int(row["id"])
-            for _, row in page_df.iterrows()
-        }
+        action_options = {}
+        for _, row in page_df.iterrows():
+            site_name = clean_value(row.get("site", ""))
+            source_name = clean_value(row.get("source_file", ""))
+            sheet_name = clean_value(row.get("sheet_name", ""))
+            row_id = int(row["id"])
+
+            label_parts = [site_name]
+            if source_name:
+                label_parts.append(f"File: {source_name}")
+            if sheet_name:
+                label_parts.append(f"Sheet: {sheet_name}")
+            label_parts.append(f"ID {row_id}")
+
+            action_options[" | ".join(label_parts)] = row_id
 
         selected_action_label = st.selectbox(
             "Website select karein",
@@ -2730,6 +3297,17 @@ elif page == "Search Websites":
 
         selected_action_id = action_options[selected_action_label]
         selected_action_row = df[df["id"] == selected_action_id].iloc[0]
+
+        selected_source_file = clean_value(selected_action_row.get("source_file", ""))
+        selected_sheet_name = clean_value(selected_action_row.get("sheet_name", ""))
+
+        meta1, meta2 = st.columns(2)
+        meta1.info(
+            f"📁 Source File: {selected_source_file or 'Unknown'}"
+        )
+        meta2.info(
+            f"📄 Sheet/Tab: {selected_sheet_name or 'Unknown'}"
+        )
         selected_domain = normalize_domain(selected_action_row["site"])
         selected_url = (
             selected_action_row["site"]
@@ -2807,6 +3385,18 @@ elif page == "Search Websites":
         if not column.startswith("_")
     ]
 
+    if not st.session_state.get("admin_logged_in", False):
+        _private_export_cols = {
+            "original_price",
+            "markup_percent",
+            "manual_price",
+            "casino_original_price",
+        }
+        export_columns = [
+            c for c in export_columns
+            if c not in _private_export_cols
+        ]
+
     csv_data = filtered[export_columns].to_csv(
         index=False
     ).encode("utf-8-sig")
@@ -2820,48 +3410,251 @@ elif page == "Search Websites":
     )
 
 
+# Performance note: workbook parsing is intentionally selected-sheet only.
+# Streamlit data cache can be cleared manually from Settings if stale data appears.
+
 # =========================================================
 # IMPORT
 # =========================================================
 elif page == "Import Excel":
     if require_admin():
         st.header("Import Excel or CSV")
-        st.caption("Auto-private reseller contacts + default 20% markup + cloud sync.")
-        uploaded_file=st.file_uploader("Choose Excel or CSV File",type=["xlsx","xlsm","csv"])
+        st.caption(
+            "Ultra Fast Universal Import — selected sheet only + automatic header, URL/domain, DA/DR/Traffic, Price, TAT and Link detection."
+        )
+
+        uploaded_file = st.file_uploader(
+            "Choose Excel or CSV File",
+            type=["xlsx", "xlsm", "csv"],
+        )
+
         if uploaded_file is not None:
             try:
-                filename=uploaded_file.name; lower=filename.lower(); private_total=0
-                sheets=["CSV"] if lower.endswith(".csv") else pd.ExcelFile(uploaded_file).sheet_names
-                st.success(f"✅ File loaded: {filename}")
-                selected_sheet=st.selectbox("📄 Select Excel Sheet / Tab",sheets)
-                scan_sheets=sheets
-                for sh in scan_sheets:
-                    uploaded_file.seek(0)
-                    raw=pd.read_csv(uploaded_file,header=None,dtype=str,on_bad_lines="skip") if sh=="CSV" else pd.read_excel(uploaded_file,sheet_name=sh,header=None,dtype=str)
-                    hr=find_header_row(raw); priv=detect_private_rows(raw,hr,filename,sh); private_total += save_private_rows(priv)
-                    mapped=""
-                    if hr is not None:
-                        cols=[clean_value(v) for v in raw.iloc[hr].tolist()]
-                        mapped=", ".join(f"{field}→{match_column(cols,aliases)}" for field,aliases in COLUMN_ALIASES.items() if match_column(cols,aliases) is not None)
-                    save_structure_report(filename,sh,hr,mapped,len(priv))
-                uploaded_file.seek(0)
-                raw_df=pd.read_csv(uploaded_file,header=None,dtype=str,on_bad_lines="skip") if selected_sheet=="CSV" else pd.read_excel(uploaded_file,sheet_name=selected_sheet,header=None,dtype=str)
-                header_row=find_header_row(raw_df)
-                if header_row is None:
-                    st.warning("Selected sheet website table nahi lagti; private scan save ho gaya.")
-                    st.info(f"🔒 Private rows protected: {private_total}")
+                filename = uploaded_file.name
+                lower = filename.lower()
+
+                if lower.endswith(".csv"):
+                    sheets = ["CSV"]
                 else:
                     uploaded_file.seek(0)
-                    imported_df=pd.read_csv(uploaded_file,header=header_row,dtype=str,on_bad_lines="skip") if selected_sheet=="CSV" else pd.read_excel(uploaded_file,sheet_name=selected_sheet,header=header_row,dtype=str)
-                    prepared_df=prepare_import_dataframe(imported_df.dropna(how="all"),filename,selected_sheet)
-                    a,b,c,d=st.columns(4); a.metric("Sheet",selected_sheet); b.metric("Rows",len(imported_df)); c.metric("Valid",len(prepared_df)); d.metric("Private",private_total)
-                    cols=[x for x in ["site","original_price","selling_price","markup_percent","sheet_name"] if x in prepared_df.columns]
-                    st.dataframe(prepared_df[cols].head(50),width="stretch",hide_index=True)
-                    confirm=st.checkbox("✅ Preview check kar li hai.")
-                    if st.button("📥 Import Selected Sheet",type="primary",width="stretch",disabled=not confirm):
-                        count=save_imported_sites(prepared_df); refresh_sites(); st.success(f"✅ {count:,} sites save/update • 🔒 {private_total} private rows • 💰 20% markup")
-            except Exception as exc: st.error(f"Import error: {type(exc).__name__}: {exc}")
+                    sheets = pd.ExcelFile(uploaded_file).sheet_names
 
+                st.success(f"✅ File loaded: {filename}")
+
+                selected_sheet = st.selectbox(
+                    "📄 Select Excel Sheet / Tab",
+                    sheets,
+                )
+
+                # Only selected sheet is scanned here.
+                raw_df, imported_df, header_row, import_mode = read_import_sheet(
+                    uploaded_file,
+                    selected_sheet,
+                    lower,
+                )
+
+                private_rows = detect_private_rows(
+                    raw_df,
+                    header_row,
+                    filename,
+                    selected_sheet,
+                )
+                private_count = save_private_rows(private_rows)
+
+                mapped = ""
+                if header_row is not None:
+                    cols = [clean_value(v) for v in raw_df.iloc[header_row].tolist()]
+                    mapped = ", ".join(
+                        f"{field}→{match_column(cols, aliases)}"
+                        for field, aliases in COLUMN_ALIASES.items()
+                        if match_column(cols, aliases) is not None
+                    )
+                elif import_mode == "inferred_headerless":
+                    mapped = "Auto-inferred headerless reseller layout"
+
+                save_structure_report(
+                    filename,
+                    selected_sheet,
+                    header_row,
+                    mapped,
+                    private_count,
+                )
+
+                if import_mode == "no_table":
+                    st.warning(
+                        "Selected sheet mein valid website table detect nahi hui. "
+                        "Summary/contact sheet ho to isay skip karna sahi hai."
+                    )
+                    st.info(f"🔒 Private rows protected: {private_count}")
+
+                    with st.expander("Preview selected sheet"):
+                        st.dataframe(
+                            raw_df.head(20),
+                            width="stretch",
+                            hide_index=True,
+                        )
+
+                else:
+                    prepared_df = prepare_import_dataframe(
+                        imported_df,
+                        filename,
+                        selected_sheet,
+                    )
+
+                    a, b, c, d = st.columns(4)
+                    a.metric("Sheet", selected_sheet)
+                    b.metric("Rows Read", f"{len(imported_df):,}")
+                    c.metric("Valid Websites", f"{len(prepared_df):,}")
+                    d.metric(
+                        "Detection",
+                        "Headerless Auto"
+                        if import_mode == "inferred_headerless"
+                        else "Header Found",
+                    )
+
+                    st.info(
+                        f"📁 Auto-save destination → File: {filename}  |  Sheet: {selected_sheet}"
+                    )
+
+                    preview_cols = [
+                        c for c in [
+                            "site", "type", "da", "dr", "traffic",
+                            "original_price", "selling_price",
+                            "payment_method", "tat", "link_type",
+                        ]
+                        if c in prepared_df.columns
+                    ]
+
+                    st.dataframe(
+                        prepared_df[preview_cols].head(50),
+                        width="stretch",
+                        hide_index=True,
+                        height=460,
+                    )
+
+                    confirm = st.checkbox(
+                        "✅ Preview check kar li hai.",
+                        key="confirm_selected_sheet_import",
+                    )
+
+                    if st.button(
+                        "⚡ Fast Import Selected Sheet",
+                        type="primary",
+                        width="stretch",
+                        disabled=not confirm or prepared_df.empty,
+                    ):
+                        progress = st.progress(5)
+                        status = st.empty()
+                        status.info(
+                            f"Saving {len(prepared_df):,} websites locally..."
+                        )
+
+                        count = save_imported_sites(
+                            prepared_df,
+                            cloud_batch_size=1000,
+                        )
+
+                        progress.progress(100)
+                        st.cache_data.clear()
+
+                        status.success(
+                            f"✅ {count:,} sites save/update ho gayi • "
+                            f"File: {filename} • Sheet: {selected_sheet}"
+                        )
+                        st.success(
+                            f"⚡ Fast import complete • "
+                            f"🔒 {private_count:,} private rows protected."
+                        )
+
+                # All-sheet mode is manual only.
+                if not lower.endswith(".csv"):
+                    st.divider()
+                    with st.expander("🚀 Import All Valid Sheets (Optional)", expanded=False):
+                        st.caption(
+                            "Ye poori workbook scan karega. Sirf tab use karein jab aapko tamam valid tabs import karne hon."
+                        )
+
+                        confirm_all = st.checkbox(
+                            "I confirm: import all detected website sheets.",
+                            key="confirm_import_all_valid_sheets",
+                        )
+
+                        if st.button(
+                            "🚀 Import All Valid Sheets",
+                            type="primary",
+                            width="stretch",
+                            disabled=not confirm_all,
+                            key="import_all_valid_sheets_button",
+                        ):
+                            progress = st.progress(0)
+                            status = st.empty()
+
+                            total_saved = 0
+                            valid_sheets = 0
+                            skipped_sheets = []
+                            failed_sheets = []
+
+                            for index, sh in enumerate(sheets, start=1):
+                                try:
+                                    status.info(
+                                        f"Processing {index}/{len(sheets)}: {sh}"
+                                    )
+
+                                    raw_sheet, imported_sheet, hr_sheet, mode_sheet = read_import_sheet(
+                                        uploaded_file,
+                                        sh,
+                                        lower,
+                                    )
+
+                                    if mode_sheet == "no_table" or imported_sheet.empty:
+                                        skipped_sheets.append(sh)
+                                    else:
+                                        prepared_sheet = prepare_import_dataframe(
+                                            imported_sheet,
+                                            filename,
+                                            sh,
+                                        )
+
+                                        if prepared_sheet.empty:
+                                            skipped_sheets.append(sh)
+                                        else:
+                                            saved = save_imported_sites(
+                                                prepared_sheet,
+                                                cloud_batch_size=1000,
+                                            )
+                                            total_saved += saved
+                                            valid_sheets += 1
+
+                                except Exception as sheet_exc:
+                                    failed_sheets.append(
+                                        f"{sh}: {type(sheet_exc).__name__}"
+                                    )
+
+                                progress.progress(
+                                    int(index / len(sheets) * 100)
+                                )
+
+                            refresh_sites()
+
+                            status.success(
+                                f"✅ {total_saved:,} website rows imported "
+                                f"from {valid_sheets} valid sheets."
+                            )
+
+                            if skipped_sheets:
+                                st.info(
+                                    "Skipped: " + ", ".join(skipped_sheets)
+                                )
+
+                            if failed_sheets:
+                                st.warning(
+                                    "Failed: " + ", ".join(failed_sheets)
+                                )
+
+            except Exception as exc:
+                st.error(
+                    f"Import error: {type(exc).__name__}: {exc}"
+                )
 
 
 # =========================================================
@@ -3788,20 +4581,97 @@ elif page == "Private Contacts":
 elif page == "Reseller Private Details":
     if require_admin():
         st.header("Reseller Private Details")
-        srcs=safe_unique(df,"source_file"); selected=st.selectbox("Source / Reseller File",srcs)
-        if selected!="All":
-            pdf=pd.DataFrame()
+        st.caption(
+            "Auto-detected private contacts: WhatsApp/Phone, Email, Facebook, LinkedIn, Telegram, Instagram and payment/admin notes."
+        )
+
+        srcs = safe_unique(df, "source_file")
+        selected = st.selectbox("Source / Reseller File", srcs)
+
+        if selected != "All":
+            pdf = pd.DataFrame()
+
             if cloud_enabled():
-                try: pdf=cloud_fetch("reseller_private","*","source_file=eq."+urllib.parse.quote(selected,safe=""))
-                except Exception: pass
+                try:
+                    pdf = cloud_fetch(
+                        "reseller_private",
+                        "*",
+                        "source_file=eq." + urllib.parse.quote(selected, safe="")
+                    )
+                except Exception:
+                    pass
+
             if pdf.empty:
-                with sqlite3.connect(RESELLER_PRIVATE_DB_PATH) as conn: pdf=pd.read_sql_query("SELECT * FROM reseller_private WHERE source_file=? ORDER BY sheet_name,id",conn,params=(selected,))
-            if pdf.empty: st.warning("Private details nahi milin.")
+                with sqlite3.connect(RESELLER_PRIVATE_DB_PATH) as conn:
+                    pdf = pd.read_sql_query(
+                        """
+                        SELECT *
+                        FROM reseller_private
+                        WHERE source_file=?
+                        ORDER BY sheet_name,id
+                        """,
+                        conn,
+                        params=(selected,),
+                    )
+
+            if pdf.empty:
+                st.warning(
+                    "Private details nahi milin. Is reseller file ko Import Excel se dobara scan/import karein."
+                )
             else:
-                for i,r in pdf.iterrows():
-                    value=clean_value(r.get("field_value","")); st.markdown(f"**{clean_value(r.get('sheet_name',''))} — {clean_value(r.get('field_name',''))}**"); st.code(value,language=None)
-                    m=re.search(r"\+?\d[\d\s().-]{7,}\d",value)
-                    if m: st.link_button("🟢 WhatsApp",whatsapp_url(m.group()),width="stretch")
+                st.success(f"🔒 {len(pdf):,} private detail records detected")
+
+                for _, r in pdf.iterrows():
+                    sheet_name = clean_value(r.get("sheet_name", ""))
+                    field_name = clean_value(r.get("field_name", ""))
+                    value = clean_value(r.get("field_value", ""))
+
+                    st.markdown(f"**{sheet_name} — {field_name}**")
+                    st.code(value, language=None)
+
+                    field_low = field_name.lower()
+                    value_low = value.lower()
+
+                    # Direct contact actions.
+                    if "email" in field_low or EMAIL_RE.search(value):
+                        email_match = EMAIL_RE.search(value)
+                        if email_match:
+                            st.link_button(
+                                "✉️ Email",
+                                "mailto:" + email_match.group(),
+                                width="stretch",
+                            )
+
+                    if "facebook" in field_low or "facebook.com" in value_low or "fb.com" in value_low:
+                        url = value if value.startswith(("http://", "https://")) else "https://" + value
+                        st.link_button("🔵 Facebook", url, width="stretch")
+
+                    if "linkedin" in field_low or "linkedin.com" in value_low:
+                        url = value if value.startswith(("http://", "https://")) else "https://" + value
+                        st.link_button("💼 LinkedIn", url, width="stretch")
+
+                    if "telegram" in field_low or "t.me/" in value_low or "telegram.me/" in value_low:
+                        url = value if value.startswith(("http://", "https://")) else "https://" + value
+                        st.link_button("🔷 Telegram", url, width="stretch")
+
+                    if "instagram" in field_low or "instagram.com" in value_low:
+                        url = value if value.startswith(("http://", "https://")) else "https://" + value
+                        st.link_button("📸 Instagram", url, width="stretch")
+
+                    if "whatsapp" in field_low or "phone" in field_low or "wa.me/" in value_low:
+                        phone_match = PHONE_RE.search(value)
+                        if phone_match:
+                            st.link_button(
+                                "🟢 WhatsApp",
+                                whatsapp_url(phone_match.group()),
+                                width="stretch",
+                            )
+                        elif "wa.me/" in value_low or "whatsapp.com" in value_low:
+                            url = value if value.startswith(("http://", "https://")) else "https://" + value
+                            st.link_button("🟢 WhatsApp", url, width="stretch")
+
+                    st.divider()
+
 
 # =========================================================
 # RESELLER PRICE MANAGER
@@ -3809,23 +4679,36 @@ elif page == "Reseller Private Details":
 elif page == "Reseller Price Manager":
     if require_admin():
         st.header("Reseller Price Manager")
-        selected_id,row=site_selector(df,"Website select karein")
-        if row is not None:
-            original=clean_value(row.get("original_price",row.get("general_price",""))); selling=clean_value(row.get("selling_price",row.get("general_price",""))); markup=float(row.get("markup_percent",DEFAULT_RESELLER_MARKUP) or DEFAULT_RESELLER_MARKUP); manual=bool(row.get("manual_price",False))
-            a,b,c,d=st.columns(4); a.metric("Original Price",original or "-"); b.metric("Markup",f"{markup:.1f}%"); c.metric("Selling Price",selling or "-"); d.metric("Mode","Manual" if manual else "Auto")
-            mp=st.number_input("Manual Selling Price",min_value=0.0,value=float(parse_price(selling) or 0),step=1.0)
-            c1,c2=st.columns(2)
-            with c1:
-                if st.button("Save Manual Price",type="primary",width="stretch"):
-                    with sqlite3.connect(DB_PATH) as conn: conn.execute("UPDATE sites SET selling_price=?,general_price=?,manual_price=1 WHERE id=?",(f"{mp:.2f}",f"{mp:.2f}",int(selected_id))); conn.commit()
-                    sync_one_site_to_cloud(int(selected_id)); refresh_sites(); st.rerun()
-            with c2:
-                if st.button("Reset to Auto Markup",width="stretch"):
-                    on=parse_price(original); auto=f"{on*(1+markup/100.0):.2f}" if on is not None else original
-                    with sqlite3.connect(DB_PATH) as conn: conn.execute("UPDATE sites SET selling_price=?,general_price=?,manual_price=0 WHERE id=?",(auto,auto,int(selected_id))); conn.commit()
-                    sync_one_site_to_cloud(int(selected_id)); refresh_sites(); st.rerun()
-            nm=st.number_input("Entire Sheet Markup %",min_value=0.0,max_value=500.0,value=markup,step=1.0)
-            if st.button("Apply Markup to Entire Sheet",width="stretch"): set_sheet_markup(clean_value(row.get("source_file","")),clean_value(row.get("sheet_name","")),nm); refresh_sites(); st.rerun()
+        # Admin-only pricing controls
+        if st.session_state.get("admin_logged_in", False):
+            selected_id,row=site_selector(df,"Website select karein")
+            if row is not None:
+                original=clean_value(row.get("original_price",row.get("general_price",""))); selling=clean_value(row.get("selling_price",row.get("general_price",""))); markup=float(row.get("markup_percent",DEFAULT_RESELLER_MARKUP) or DEFAULT_RESELLER_MARKUP); manual=bool(row.get("manual_price",False))
+                a,b,c,d=st.columns(4); a.metric("Original Price",original or "-"); b.metric("Markup",f"{markup:.1f}%"); c.metric("Selling Price",selling or "-"); d.metric("Mode","Manual" if manual else "Auto")
+                mp=st.number_input("Manual Selling Price",min_value=0.0,value=float(parse_price(selling) or 0),step=1.0)
+                c1,c2=st.columns(2)
+                with c1:
+                    if st.button("Save Manual Price",type="primary",width="stretch"):
+                        with sqlite3.connect(DB_PATH) as conn: conn.execute("UPDATE sites SET selling_price=?,general_price=?,manual_price=1 WHERE id=?",(f"{mp:.2f}",f"{mp:.2f}",int(selected_id))); conn.commit()
+                        sync_one_site_to_cloud(int(selected_id)); refresh_sites(); st.rerun()
+                with c2:
+                    if st.button("Reset to Auto Markup",width="stretch"):
+                        on=parse_price(original); auto=f"{on*(1+markup/100.0):.2f}" if on is not None else original
+                        with sqlite3.connect(DB_PATH) as conn: conn.execute("UPDATE sites SET selling_price=?,general_price=?,manual_price=0 WHERE id=?",(auto,auto,int(selected_id))); conn.commit()
+                        sync_one_site_to_cloud(int(selected_id)); refresh_sites(); st.rerun()
+                nm=st.number_input("Entire Sheet Markup %",min_value=0.0,max_value=500.0,value=markup,step=1.0)
+                if st.button("Apply Markup to Entire Sheet",width="stretch"): set_sheet_markup(clean_value(row.get("source_file","")),clean_value(row.get("sheet_name","")),nm); refresh_sites(); st.rerun()
+        else:
+            st.markdown("### Price")
+            st.caption("Client view — internal cost and markup are hidden.")
+            try:
+                _public_price = selected_action_row.get("selling_price", selected_action_row.get("general_price", ""))
+            except Exception:
+                _public_price = ""
+            if clean_value(_public_price):
+                st.metric("Selling Price", clean_value(_public_price))
+            else:
+                st.info("Price available on request.")
 
 # =========================================================
 # SHEET STRUCTURE SCANNER
