@@ -14,6 +14,7 @@ import urllib.request
 import urllib.error
 
 import pandas as pd
+from workspace_helpers import normalize_country, metric_mask, PRIMARY_PAGES, TOOL_PAGES, resolve_page
 import streamlit as st
 from PIL import Image
 
@@ -818,10 +819,7 @@ def fast_filter_sites(
     if sheet != "All":
         filtered = filtered.loc[filtered["sheet_name"].eq(sheet)]
 
-    return filtered.loc[
-        filtered["_dr_num"].fillna(-1).ge(min_dr)
-        & filtered["_price_num"].fillna(0).le(max_price)
-    ]
+    return filtered.loc[metric_mask(filtered, min_dr, max_price)]
 
 
 # =========================================================
@@ -1191,13 +1189,7 @@ def load_sites() -> pd.DataFrame:
             _s = _s.mask(_s.map(_looks_numeric_only), "")
 
             if _cat_col == "country":
-                _country_valid = (
-                    _s.str.contains(r"[A-Za-z]", regex=True, na=False)
-                    & ~_s.str.contains(r"\d", regex=True, na=False)
-                    & _s.str.match(r"^[A-Za-zÀ-ÿ .,'()&/-]+$", na=False)
-                    & (_s.str.len() <= 80)
-                )
-                _s = _s.mask(~_country_valid, "")
+                _s = _s.map(normalize_country)
 
             elif _cat_col == "payment_method":
                 _allowed = [
@@ -1958,6 +1950,7 @@ def prepare_import_dataframe(uploaded_df, source_file, sheet_name):
                 item[field] = clean_value(row.get(column, ""))
 
         item["site"] = domain
+        item["country"] = normalize_country(item["country"])
         item["payment_method"] = normalize_payment(item["payment_method"])
         item["link_type"] = normalize_link_type(item["link_type"])
         original=clean_value(item["general_price"]); casino_original=clean_value(item["casino_price"]); markup=get_sheet_markup(source_file,sheet_name)
@@ -2856,80 +2849,55 @@ Best regards,
 
 
 def navigate_to(page_name: str) -> None:
-    st.session_state["nav_page"] = page_name
+    st.session_state["nav_page"] = resolve_page(page_name)
+    st.session_state["more_tool"] = "Choose a tool…"
+    aliases = {"Dashboard": "home", "Search Websites": "search", "Favorites": "saved", "Outreach Generator": "outreach"}
+    st.query_params["page"] = aliases.get(st.session_state["nav_page"], st.session_state["nav_page"])
 
 
-# =========================================================
-# SESSION
-# =========================================================
+def draft_for_site(domain: str) -> None:
+    st.session_state["outreach_gen_url"] = domain
+    navigate_to("Outreach Generator")
+
+
+def open_more_tool() -> None:
+    selected = st.session_state.get("more_tool", "Choose a tool…")
+    if selected in TOOL_PAGES:
+        navigate_to(selected)
+
+
+# Keep page state independent of navigation widgets, including deep links from the website.
 if "admin_logged_in" not in st.session_state:
     st.session_state.admin_logged_in = False
-
-
+if "nav_page" not in st.session_state:
+    st.session_state["nav_page"] = resolve_page(st.query_params.get("page", "home"))
+    if st.query_params.get("q"):
+        st.session_state["fast_search_query"] = st.query_params["q"][:500]
+page = resolve_page(st.session_state["nav_page"])
 df = load_sites()
 
-
-# =========================================================
-# SIDEBAR
-# =========================================================
 with st.sidebar:
     st.markdown(
-        f"""
-        <div class="sidebar-brand">
-            <div class="sidebar-logo"><span class="material-symbols-rounded">auto_awesome</span></div>
-            <div>
-                <div class="sidebar-title">GP Site Finder Pro</div>
-                <div class="sidebar-sub">Aaquib Digital Solutions</div>
-            </div>
-        </div>
-        """,
+        '<div class="sidebar-brand"><div class="sidebar-logo">GP</div>'
+        '<div><div class="sidebar-title">Site Finder Pro</div>'
+        '<div class="sidebar-sub">Aaquib Digital Solutions</div></div></div>',
         unsafe_allow_html=True,
     )
+    st.caption("YOUR WORKSPACE")
+    for destination, label, icon in PRIMARY_PAGES:
+        st.button(label, icon=icon, key="nav_" + destination,
+                  type="primary" if page == destination else "secondary",
+                  width="stretch", on_click=navigate_to, args=(destination,))
+    with st.expander("More tools", expanded=page in TOOL_PAGES):
+        st.selectbox("Choose a tool", ["Choose a tool…", *TOOL_PAGES],
+                     key="more_tool", on_change=open_more_tool, label_visibility="collapsed")
+        st.caption("Imports, reports, contacts and workspace settings.")
+    st.divider()
+    st.button("Help & contact", key="nav_help", width="stretch", on_click=navigate_to, args=("Contact Us",))
+    st.caption("Admin signed in" if st.session_state.admin_logged_in else "Admin tools require sign-in")
 
-    page = st.radio(
-        "Navigation",
-        [
-            "Dashboard",
-            "Statistics",
-            "Search Websites",
-            "Real Metrics Search",
-            "Outreach Generator",
-            "Client Outreach Generator",
-            "Add New Site",
-            "Import Excel",
-            "Edit Site",
-            "Delete Site",
-            "Duplicate Finder",
-            "Export Results",
-            "Favorites",
-            "Private Contacts",
-            "Reseller Private Details",
-            "Reseller Price Manager",
-            "Sheet Structure Scanner",
-            "Cloud Sync",
-            "Admin Contact Vault",
-            "Outreach Pipeline",
-            "Our Team",
-            "Contact Us",
-            "My Profile / Contact",
-            "Backup & Restore",
-            "Settings",
-            "Admin Login",
-        ],
-        label_visibility="collapsed",
-        key="nav_page",
-    )
 
-    st.markdown(
-        f"""
-        <div class="sidebar-user">
-            <div class="sidebar-user-name">{html.escape(profile_settings.get('name','Aaquib SEO'))}</div>
-            <div class="sidebar-user-role">{'Administrator · Signed in' if st.session_state.admin_logged_in else 'Workspace · Admin locked'}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
+st.markdown('\n<style>\n:root { --purple:#2463eb; --purple-soft:#eff5ff; --border:#dfe6ef; --ink:#12243b; }\n.stApp { background:#f6f8fb; }\n.block-container { max-width:1160px; padding-top:2rem; }\n.main-title { font-size:25px!important; letter-spacing:-.8px; }\n.subtitle { font-size:14px!important; margin-bottom:1.4rem; }\n[data-testid="stSidebar"] { background:#101e35; }\n[data-testid="stSidebar"] .stButton button { justify-content:flex-start; border-radius:10px; min-height:45px; box-shadow:none; font-size:14px; }\n[data-testid="stSidebar"] button[kind="secondary"] { background:transparent; border-color:transparent; color:#dce7f8!important; }\n[data-testid="stSidebar"] button[kind="secondary"]:hover { background:#1b304e; border-color:#28446b; }\n[data-testid="stSidebar"] button[kind="primary"] { background:#2563eb!important; border-color:#2563eb!important; }\n[data-testid="stSidebar"] [data-baseweb="select"] * { color:#172033!important; }\n.sidebar-logo { background:#2563eb; color:white; font-weight:800; border-radius:11px; box-shadow:none; }\n.stButton button { box-shadow:none!important; border-radius:10px!important; min-height:44px; }\n.stButton button[kind="primary"] { background:#2563eb!important; border:1px solid #2563eb!important; color:white!important; }\n.simple-hero { padding:12px 0 26px; max-width:750px; }\n.simple-eyebrow { color:#2563eb; font-size:11px; font-weight:800; letter-spacing:1.6px; }\n.simple-hero h1 { font-size:clamp(30px,4vw,46px); line-height:1.15; letter-spacing:-1.8px; margin:16px 0; color:#12243b; }\n.simple-hero p { font-size:16px; line-height:1.7; color:#64748b; max-width:580px; }\n[data-testid="stMetric"] { padding:16px 0; }\n@media(max-width:768px){.block-container{padding:1rem}.simple-hero{padding-top:0}.simple-hero h1{font-size:32px}}\n</style>\n', unsafe_allow_html=True)
 
 # =========================================================
 # HEADER
@@ -2943,7 +2911,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<p class="subtitle">A premium research workspace for guest posting, publisher outreach and link acquisition intelligence.</p>',
+    '<p class="subtitle">Search publishers. Save your shortlist. Write your next pitch.</p>',
     unsafe_allow_html=True,
 )
 
@@ -2953,232 +2921,78 @@ st.markdown(
 # =========================================================
 if page == "Dashboard":
     total_sites = len(df)
-    total_countries = (
-        df["country"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()
-        if "country" in df.columns else 0
-    )
-    dr_values = pd.to_numeric(df.get("dr", pd.Series(dtype=float)), errors="coerce")
-    price_values = pd.to_numeric(df.get("general_price", pd.Series(dtype=float)), errors="coerce")
-    average_dr = 0 if pd.isna(dr_values.mean()) else dr_values.mean()
-    average_price = 0 if pd.isna(price_values.mean()) else price_values.mean()
-
-    if HERO_IMAGE_PATH.exists():
-        hero_b64 = __import__('base64').b64encode(HERO_IMAGE_PATH.read_bytes()).decode('ascii')
-        hero_visual = f'<div class="hero-photo-shell"><img src="data:image/png;base64,{hero_b64}" alt="Guest posting research network"></div>'
-    else:
-        hero_visual = '<div class="hero-photo-shell" style="background:radial-gradient(circle at 70% 35%,rgba(24,191,197,.35),transparent 20%),radial-gradient(circle at 40% 60%,rgba(112,69,214,.45),transparent 26%),linear-gradient(135deg,#121A34,#113943);"></div>'
-
+    saved_count = int(df.get("favorite", pd.Series(dtype=int)).eq(1).sum())
+    countries = df.get("country", pd.Series(dtype=str)).fillna("")
+    known_count = int(countries.ne("").sum())
     st.markdown(
-        f"""
-        <div class="hero-shell">
-            <div class="hero-copy">
-                <div class="hero-kicker">Outreach Intelligence</div>
-                <div class="hero-title">Find, qualify and place guest posts faster.</div>
-                <div class="hero-text">
-                    {total_sites:,} publisher records across {total_countries:,} countries, enriched with DR,
-                    traffic, pricing, link type and outreach information.
-                </div>
-                <div class="hero-pills">
-                    <span class="hero-pill">Smart Search</span>
-                    <span class="hero-pill">SEO Metrics</span>
-                    <span class="hero-pill">Private CRM</span>
-                    <span class="hero-pill">Excel Import</span>
-                </div>
-            </div>
-            {hero_visual}
-        </div>
-        """,
+        '<div class="simple-hero"><span class="simple-eyebrow">YOUR NEXT PUBLISHER STARTS HERE</span>'
+        '<h1>Less searching.<br>More useful connections.</h1>'
+        '<p>Find a relevant website, keep it in your shortlist and prepare a personal pitch.</p></div>',
         unsafe_allow_html=True,
     )
-
-    action1, action2, spacer = st.columns([1.1,1.1,5.8])
-    with action1:
-        st.button(
-            "Search Websites",
-            type="primary",
-            width="stretch",
-            on_click=navigate_to,
-            args=("Search Websites",),
-            key="dashboard_go_search",
-        )
-    with action2:
-        st.button(
-            "Export Results",
-            width="stretch",
-            on_click=navigate_to,
-            args=("Export Results",),
-            key="dashboard_go_export",
-        )
-
-    c1, c2, c3, c4 = st.columns(4)
-    cards = [
-        ("database", "", "Total Websites", f"{total_sites:,}", "Publisher inventory"),
-        ("public", "teal", "Countries", f"{total_countries:,}", "Global coverage"),
-        ("speed", "sage", "Average DR", f"{average_dr:.1f}", "Authority benchmark"),
-        ("payments", "copper", "Average Price", f"${average_price:.0f}", "General placement price"),
+    actions = [
+        ("01", "Find publishers", "Search by topic, country and authority.", "Search websites", "Search Websites"),
+        ("02", "Your shortlist", "Return to the websites you have saved.", "View saved sites", "Favorites"),
+        ("03", "Start a conversation", "Draft a message for your next publisher.", "Create a pitch", "Outreach Generator"),
     ]
-    for col, (icon, tone, label, value, delta) in zip([c1,c2,c3,c4], cards):
+    for col, (number, title, text, label, destination) in zip(st.columns(3), actions):
         with col:
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-icon {tone}"><span class="material-symbols-rounded">{icon}</span></div>
-                    <div class="metric-label">{label}</div>
-                    <div class="metric-value">{value}</div>
-                    <div class="metric-delta">{delta}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    st.markdown('<div class="section-title">Guest Posting Analytics</div><div class="section-kicker">Real charts generated from your current publisher database.</div>', unsafe_allow_html=True)
-    ch1, ch2 = st.columns(2)
-    with ch1:
-        st.markdown('<div class="surface-card"><b>Top publisher countries</b><div class="section-kicker">Where most opportunities are located</div></div>', unsafe_allow_html=True)
-        if "country" in df.columns:
-            country_chart = df["country"].fillna("Unknown").astype(str).replace("", "Unknown").value_counts().head(10)
-            st.bar_chart(country_chart)
-    with ch2:
-        st.markdown('<div class="surface-card"><b>Domain Rating distribution</b><div class="section-kicker">Authority profile of the database</div></div>', unsafe_allow_html=True)
-        dr_numeric = pd.to_numeric(df.get("dr", pd.Series(index=df.index, dtype=float)), errors="coerce")
-        dr_bins = pd.cut(dr_numeric, bins=[-1,20,40,60,80,1000], labels=["0–20","21–40","41–60","61–80","81+"])
-        st.bar_chart(dr_bins.value_counts().sort_index())
-
-    top_df = df[[c for c in df.columns if c in {"site","country","type","link_type","dr","general_price"}]].copy()
-    top_df["_dr_num"] = pd.to_numeric(top_df.get("dr", pd.Series(index=top_df.index)), errors="coerce")
-    top_df["_price_num"] = pd.to_numeric(top_df.get("general_price", pd.Series(index=top_df.index)), errors="coerce")
-    top_df = top_df.sort_values(["_dr_num","_price_num"], ascending=[False,True]).head(7)
-    rows_html = ""
-    for _, r in top_df.iterrows():
-        domain = html.escape(str(r.get("site", "") or ""))
-        country = html.escape(str(r.get("country", "") or "Unknown"))
-        category = html.escape(str(r.get("type", "") or "General"))
-        link_type = html.escape(str(r.get("link_type", "") or ""))
-        dr = "-" if pd.isna(r.get("_dr_num")) else f"{float(r['_dr_num']):.0f}"
-        price = "-" if pd.isna(r.get("_price_num")) else f"${float(r['_price_num']):.0f}"
-        rows_html += f"<div class='publisher-row'><div><div class='publisher-site'>{domain}</div><div class='publisher-meta'>{country} · {category} · {link_type}</div></div><div class='dr-badge'>DR {dr}</div><div class='price-tag'>{price}</div></div>"
-    st.markdown(
-        f"<div class='publisher-list'><div class='publisher-head'><div><div class='publisher-title'>Highest authority publishers</div><div class='publisher-sub'>Top opportunities ranked by Domain Rating</div></div></div>{rows_html}</div>",
-        unsafe_allow_html=True,
-    )
+            with st.container(border=True):
+                st.caption(number)
+                st.subheader(title)
+                st.write(text)
+                st.button(label, key="home_" + destination, width="stretch",
+                          type="primary" if destination == "Search Websites" else "secondary",
+                          on_click=navigate_to, args=(destination,))
+    st.divider()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Publisher records", f"{total_sites:,}")
+    c2.metric("Saved sites", f"{saved_count:,}")
+    c3.metric("Countries recorded", f"{countries.replace('', pd.NA).dropna().nunique():,}")
+    if total_sites:
+        st.caption(f"Country recorded for {known_count:,} of {total_sites:,} records. Missing countries are kept as unknown.")
+    else:
+        st.info("Your publisher list is empty. An administrator can add a site or import a spreadsheet from More tools.")
+    with st.expander("Database overview"):
+        st.write("View country coverage, saved sites and publisher statistics.")
+        st.button("View statistics", on_click=navigate_to, args=("Statistics",))
 
 
 # =========================================================
 # SEARCH
 # =========================================================
 elif page == "Search Websites":
-    st.header("Search Websites")
-    st.caption(
-        "Fast mode enabled — filters cached hain aur table sirf current page ke rows render karta hai."
-    )
-
-    if st.button(
-        "♻️ Refresh Sheets / Clear Cache",
-        key="refresh_search_cache",
-        help="Nayi imported sheets ya stale filter list ho to is button ko dabayein.",
-    ):
-        st.cache_data.clear()
-        st.success("Cache clear ho gaya. Fresh sheet/source list reload ho rahi hai.")
-        st.rerun()
-
+    st.header("Find publishers")
+    st.caption("Start with a website or topic. Narrow the results only when you need to.")
+    if df.empty:
+        st.info("No publisher records yet. Ask an administrator to import a website list from More tools.")
+        st.stop()
     filter_options = get_filter_options(df)
-
-    search = st.text_input(
-        "Search website, country, niche or source file",
-        placeholder="Paste URL or search: example.com | India | SaaS | technology",
-        key="fast_search_query",
-    )
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-
+    search = st.text_input("Website or topic", placeholder="Search a domain, technology, travel…", key="fast_search_query")
+    c1, c2, c3 = st.columns(3)
     with c1:
-        niche = st.selectbox(
-            "🎯 Niche",
-            filter_options["niche"],
-            key="fast_filter_niche",
-        )
-
+        niche = st.selectbox("Niche", filter_options["niche"], key="fast_filter_niche")
     with c2:
-        country = st.selectbox(
-            "🌍 Country",
-            filter_options["country"],
-            key="fast_filter_country",
-        )
-
+        country = st.selectbox("Country", filter_options["country"], key="fast_filter_country")
     with c3:
-        payment = st.selectbox(
-            "💳 Payment",
-            filter_options["payment"],
-            key="fast_filter_payment",
-        )
-
-    with c4:
-        link_type = st.selectbox(
-            "🔗 Link Type",
-            filter_options["link_type"],
-            key="fast_filter_link_type",
-        )
-
-    with c5:
-        all_sheet_options = load_all_sheet_names()
-        sheet_search = st.text_input(
-            "🔎 Find Sheet",
-            placeholder="Type sheet name...",
-            key="sheet_name_search_box",
-        )
-
-        if sheet_search.strip():
-            _q = sheet_search.strip().lower()
-            visible_sheet_options = [
-                x for x in all_sheet_options
-                if x == "All" or _q in x.lower()
-            ]
-            if len(visible_sheet_options) == 1:
-                visible_sheet_options = all_sheet_options
-        else:
-            visible_sheet_options = all_sheet_options
-
-        sheet = st.selectbox(
-            "📄 Source Sheet",
-            visible_sheet_options,
-            key="fast_filter_sheet",
-            help="Complete sheet list database se load hoti hai. Box me type karke sheet search bhi kar sakte hain.",
-        )
-
-    c6, c7, c8, c9 = st.columns(4)
-
-    with c6:
-        min_dr = st.number_input(
-            "⭐ Minimum DR",
-            min_value=0.0,
-            value=0.0,
-            step=1.0,
-            key="fast_filter_min_dr",
-        )
-
-    with c7:
-        max_price = st.number_input(
-            "💰 Maximum General Price",
-            min_value=0.0,
-            value=100000.0,
-            step=1.0,
-            key="fast_filter_max_price",
-        )
-
-    with c8:
-        page_size = st.selectbox(
-            "📄 Rows per page",
-            [25, 50, 100, 200],
-            index=1,
-            key="fast_filter_page_size",
-        )
-
-    with c9:
-        source_file_filter = st.selectbox(
-            "📁 Source File",
-            load_all_source_files(),
-            key="fast_filter_source_file",
-        )
+        min_dr = st.number_input("Minimum DR", min_value=0.0, max_value=100.0, value=0.0, step=5.0,
+                                 key="fast_filter_min_dr", help="0 includes websites without a recorded DR.")
+    with st.expander("More filters"):
+        a1, a2, a3 = st.columns(3)
+        with a1:
+            link_type = st.selectbox("Link type", filter_options["link_type"], key="fast_filter_link_type")
+            sheet = st.selectbox("Source sheet", load_all_sheet_names(), key="fast_filter_sheet")
+        with a2:
+            payment = st.selectbox("Payment terms", filter_options["payment"], key="fast_filter_payment")
+            source_file_filter = st.selectbox("Source file", load_all_source_files(), key="fast_filter_source_file")
+        with a3:
+            max_price = st.number_input("Maximum listed price", min_value=0.0, value=0.0, step=10.0,
+                                        key="fast_filter_max_price", help="0 means no price limit. Confirm the currency and current rate with the publisher.")
+            page_size = st.selectbox("Results per page", [25, 50, 100], key="fast_filter_page_size")
+        show_all_columns = st.checkbox("Show additional columns", key="search_all_columns")
+        if st.button("Refresh publisher data", key="refresh_search_cache"):
+            st.cache_data.clear()
+            st.rerun()
 
     filtered = fast_filter_sites(
         df,
@@ -3204,6 +3018,9 @@ elif page == "Search Websites":
         (total_results + page_size - 1) // page_size,
     )
 
+    if st.session_state.get("fast_page_number", 1) > total_pages:
+        st.session_state["fast_page_number"] = 1
+
     page_number = st.number_input(
         "Page",
         min_value=1,
@@ -3217,12 +3034,10 @@ elif page == "Search Websites":
     end_row = min(start_row + page_size, total_results)
 
     requested_visible_columns = [
-        "id", "site", "source_file", "sheet_name",
-        "detected_niche", "country",
-        "da", "dr", "traffic", "general_price",
-        "casino_price", "payment_method", "tat",
-        "type", "link_type", "favorite",
+        "id", "site", "detected_niche", "country", "dr", "traffic", "general_price", "link_type", "favorite",
     ]
+    if show_all_columns:
+        requested_visible_columns += ["da", "source_file", "sheet_name", "casino_price", "payment_method", "tat", "type"]
 
     # Keep column order but remove duplicates safely.
     visible_columns = [
@@ -3246,29 +3061,13 @@ elif page == "Search Websites":
     page_df = filtered.iloc[start_row:end_row][visible_columns].copy()
     page_df = page_df.loc[:, ~page_df.columns.duplicated()]
 
-    i1, i2, i3 = st.columns(3)
-    i1.metric("Matching Sites", f"{total_results:,}")
-    i2.metric("Current Page", f"{page_number}/{total_pages}")
-    i3.metric(
-        "Showing",
-        f"{start_row + 1 if total_results else 0:,}–{end_row:,}"
-    )
+    st.caption(f"{total_results:,} matches · Showing {start_row + 1 if total_results else 0:,}–{end_row:,}")
+    st.dataframe(page_df, width="stretch", hide_index=True, height=460,
+                 column_config={"id": None, "site": "Website", "detected_niche": "Niche",
+                                "country": "Country", "dr": "DR", "traffic": "Traffic",
+                                "general_price": "Listed price", "link_type": "Link type", "favorite": "Saved"})
 
-    if niche == "All" and not filtered.empty and "detected_niche" in filtered.columns:
-        top_niches = filtered["detected_niche"].value_counts().head(8)
-        niche_text = "  •  ".join(
-            f"{name}: {count:,}" for name, count in top_niches.items()
-        )
-        st.caption("Auto-detected niches → " + niche_text)
-
-    st.dataframe(
-        page_df,
-        width="stretch",
-        hide_index=True,
-        height=520,
-    )
-
-    st.markdown("### ⚡ Quick Row Actions")
+    st.markdown("### Save a site or prepare outreach")
 
     if page_df.empty:
         st.caption("Action ke liye current page par website available nahi hai.")
@@ -3301,13 +3100,8 @@ elif page == "Search Websites":
         selected_source_file = clean_value(selected_action_row.get("source_file", ""))
         selected_sheet_name = clean_value(selected_action_row.get("sheet_name", ""))
 
-        meta1, meta2 = st.columns(2)
-        meta1.info(
-            f"📁 Source File: {selected_source_file or 'Unknown'}"
-        )
-        meta2.info(
-            f"📄 Sheet/Tab: {selected_sheet_name or 'Unknown'}"
-        )
+        with st.expander("Record details"):
+            st.caption(f"Source: {selected_source_file or 'Unknown'} · Sheet: {selected_sheet_name or 'Unknown'}")
         selected_domain = normalize_domain(selected_action_row["site"])
         selected_url = (
             selected_action_row["site"]
@@ -3321,14 +3115,14 @@ elif page == "Search Websites":
 
         with a1:
             st.link_button(
-                "🌐 Open Website",
+                "Open website",
                 selected_url,
                 width="stretch",
             )
 
         with a2:
             is_favorite = bool(selected_action_row.get("favorite", 0))
-            favorite_text = "☆ Remove Favorite" if is_favorite else "⭐ Add Favorite"
+            favorite_text = "Remove from saved" if is_favorite else "Save site"
 
             if st.button(
                 favorite_text,
@@ -3348,37 +3142,8 @@ elif page == "Search Websites":
                 st.rerun()
 
         with a3:
-            if not st.session_state.admin_logged_in:
-                st.button(
-                    "🗑️ Delete (Admin Only)",
-                    disabled=True,
-                    width="stretch",
-                    key="fast_delete_disabled",
-                )
-            else:
-                confirm_quick_delete = st.checkbox(
-                    "Delete confirm",
-                    key="fast_quick_delete_confirm",
-                )
-
-                if st.button(
-                    "🗑️ Delete Selected",
-                    type="primary",
-                    width="stretch",
-                    disabled=not confirm_quick_delete,
-                    key="fast_quick_delete",
-                ):
-                    with sqlite3.connect(DB_PATH) as conn:
-                        conn.execute(
-                            "DELETE FROM sites WHERE id=?",
-                            (selected_action_id,),
-                        )
-                        conn.commit()
-
-                    cloud_delete_site(int(selected_action_id))
-                    refresh_sites()
-                    st.success("Selected website delete ho gayi.")
-                    st.rerun()
+            st.button("Create a pitch", width="stretch", key="search_create_pitch",
+                      on_click=draft_for_site, args=(selected_domain,))
 
     export_columns = [
         column for column in df.columns
@@ -3842,81 +3607,20 @@ elif page == "Outreach Generator":
         "LinkedIn aur WhatsApp message generate karein."
     )
 
-    g1, g2 = st.columns([1.2, 1])
-
+    website_url = st.text_input("Website URL", placeholder="https://example.com", key="outreach_gen_url")
+    g1, g2 = st.columns(2)
     with g1:
-        website_url = st.text_input(
-            "Website URL*",
-            placeholder="https://example.com/",
-            key="outreach_gen_url",
-        )
-        recipient_type = st.selectbox(
-            "Recipient Type",
-            ["Author", "Admin", "Editor", "Site Owner", "Manager"],
-            key="outreach_gen_recipient_type",
-        )
-        recipient_name = st.text_input(
-            "Recipient Name (optional)",
-            placeholder="John Doe",
-            key="outreach_gen_recipient_name",
-        )
-        niche = st.text_input(
-            "Website Niche",
-            placeholder="Technology, Business, SaaS...",
-            key="outreach_gen_niche",
-        )
-
+        recipient_name = st.text_input("Recipient name (optional)", key="outreach_gen_recipient_name")
     with g2:
-        purpose = st.selectbox(
-            "Outreach Purpose",
-            [
-                "Guest Post",
-                "Link Insertion",
-                "Guest Post + Link Insertion",
-                "Long-term Partnership",
-                "Price Inquiry",
-            ],
-            key="outreach_gen_purpose",
-        )
-        tone = st.selectbox(
-            "Tone",
-            ["Friendly", "Professional", "Short & Direct"],
-            key="outreach_gen_tone",
-        )
-        sender_name = st.text_input(
-            "Your Name",
-            value=profile_settings.get("name", "Aaquib SEO"),
-            key="outreach_gen_sender",
-        )
-        sender_company = st.text_input(
-            "Company",
-            value=profile_settings.get(
-                "company",
-                profile_settings.get(
-                    "brand",
-                    "Aaquib Digital Solutions",
-                ),
-            ),
-            key="outreach_gen_company",
-        )
-        sender_role = st.text_input(
-            "Your Role",
-            value=profile_settings.get(
-                "role",
-                "SEO, Guest Post & Outreach Specialist",
-            ),
-            key="outreach_gen_role",
-        )
-
-    custom_offer = st.text_area(
-        "Extra Details / Offer (optional)",
-        placeholder=(
-            "Example: We can provide original content, flexible anchor text, "
-            "fast payment, and are looking for long-term collaboration."
-        ),
-        height=90,
-        key="outreach_gen_offer",
-    )
+        niche = st.text_input("Website topic (optional)", placeholder="Technology, travel, business…", key="outreach_gen_niche")
+    sender_name = st.text_input("Your name", value=profile_settings.get("name", ""), key="outreach_gen_sender")
+    with st.expander("Personalize your message"):
+        recipient_type = st.selectbox("Recipient role", ["Editor", "Author", "Admin", "Site Owner", "Manager"], key="outreach_gen_recipient_type")
+        purpose = st.selectbox("Purpose", ["Guest Post", "Link Insertion", "Guest Post + Link Insertion", "Long-term Partnership", "Price Inquiry"], key="outreach_gen_purpose")
+        tone = st.selectbox("Tone", ["Professional", "Friendly", "Short & Direct"], key="outreach_gen_tone")
+        sender_company = st.text_input("Company", value=profile_settings.get("brand_name", "Aaquib Digital Solutions"), key="outreach_gen_company")
+        sender_role = st.text_input("Your role", value=profile_settings.get("role", ""), key="outreach_gen_role")
+        custom_offer = st.text_area("A relevant detail or offer", height=90, key="outreach_gen_offer")
 
     if st.button(
         "Generate Outreach Messages",
@@ -3939,64 +3643,29 @@ elif page == "Outreach Generator":
                 tone,
             )
             st.session_state.outreach_generated = generated
+            # Regeneration must replace the previous editable draft.
+            for key in ("generated_cold_email", "generated_followup_1", "generated_followup_2", "generated_linkedin", "generated_whatsapp"):
+                st.session_state.pop(key, None)
 
     generated = st.session_state.get("outreach_generated")
 
     if generated:
         st.divider()
 
-        st.markdown("### Subject Lines")
-        for i, subject in enumerate(generated["subject_lines"], start=1):
-            st.code(subject, language=None)
-
-        st.markdown("### Cold Email")
-        st.text_area(
-            "Generated Email",
-            value=generated["email"],
-            height=310,
-            key="generated_cold_email",
-        )
-
-        st.markdown("### Follow-up #1")
-        st.text_area(
-            "First Follow-up",
-            value=generated["follow_up_1"],
-            height=220,
-            key="generated_followup_1",
-        )
-
-        st.markdown("### Follow-up #2")
-        st.text_area(
-            "Second Follow-up",
-            value=generated["follow_up_2"],
-            height=220,
-            key="generated_followup_2",
-        )
-
-        m1, m2 = st.columns(2)
-
-        with m1:
-            st.markdown("### LinkedIn Message")
-            st.text_area(
-                "LinkedIn DM",
-                value=generated["linkedin"],
-                height=190,
-                key="generated_linkedin",
-            )
-
-        with m2:
-            st.markdown("### WhatsApp Message")
-            st.text_area(
-                "WhatsApp Message",
-                value=generated["whatsapp"],
-                height=190,
-                key="generated_whatsapp",
-            )
-
-        st.caption(
-            "Tip: generated text editable hai — send karne se pehle website aur "
-            "recipient ke mutabiq 1–2 lines personalize kar lena."
-        )
+        message_type = st.selectbox("Message", ["Email", "First follow-up", "Second follow-up", "LinkedIn", "WhatsApp"], key="outreach_message_type")
+        if message_type == "Email":
+            st.caption("Suggested subject")
+            st.code(generated["subject_lines"][0], language=None)
+        fields = {
+            "Email": ("email", "generated_cold_email"),
+            "First follow-up": ("follow_up_1", "generated_followup_1"),
+            "Second follow-up": ("follow_up_2", "generated_followup_2"),
+            "LinkedIn": ("linkedin", "generated_linkedin"),
+            "WhatsApp": ("whatsapp", "generated_whatsapp"),
+        }
+        field, widget_key = fields[message_type]
+        st.text_area("Your draft", value=generated[field], height=320, key=widget_key)
+        st.caption("Review the details and personalize your draft before sending.")
 
         st.markdown("### Save to Outreach Pipeline")
 
@@ -4481,26 +4150,29 @@ elif page == "Delete Site":
 # FAVORITES
 # =========================================================
 elif page == "Favorites":
-    st.header("Favorites")
-
-    selected_id, row = site_selector(df, "Favorite/Unfavorite ke liye website select karein")
-    if row is not None:
-        current = bool(row["favorite"])
-        button_text = "☆ Remove Favorite" if current else "⭐ Add to Favorites"
-        if st.button(button_text, width="stretch"):
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute(
-                    "UPDATE sites SET favorite=? WHERE id=?",
-                    (0 if current else 1, selected_id),
-                )
-                conn.commit()
-            refresh_sites()
-            st.rerun()
-
+    st.header("Saved sites")
+    st.caption("Your shortlist for the next outreach session.")
     favorites = df[df["favorite"] == 1].copy() if not df.empty else df
-    favorites = favorites[[c for c in favorites.columns if not c.startswith("_")]]
-    st.info(f"⭐ {len(favorites):,} favorite websites")
-    st.dataframe(favorites, width="stretch", hide_index=True, height=580)
+    if favorites.empty:
+        st.info("No saved sites yet. Find a publisher and choose Save site to start your shortlist.")
+        st.button("Find websites", type="primary", on_click=navigate_to, args=("Search Websites",))
+    else:
+        columns = [c for c in ["site", "detected_niche", "country", "dr", "traffic", "general_price", "link_type"] if c in favorites.columns]
+        st.caption(f"{len(favorites):,} saved websites")
+        st.dataframe(favorites[columns], width="stretch", hide_index=True, height=420)
+        selected_id, row = site_selector(favorites, "Choose a saved website")
+        if row is not None:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.button("Create a pitch", type="primary", width="stretch", on_click=draft_for_site, args=(normalize_domain(row["site"]),))
+            with c2:
+                if st.button("Remove from saved", width="stretch", key="remove_saved_site"):
+                    with sqlite3.connect(DB_PATH) as conn:
+                        conn.execute("UPDATE sites SET favorite=0 WHERE id=?", (selected_id,))
+                        conn.commit()
+                    sync_one_site_to_cloud(int(selected_id))
+                    refresh_sites()
+                    st.rerun()
 
 
 # =========================================================
