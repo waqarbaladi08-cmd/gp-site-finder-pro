@@ -1,0 +1,423 @@
+import { before, after, test } from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { createHash, pbkdf2Sync } from "node:crypto";
+import { build } from "esbuild";
+import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import { prepareSite } from "../shared/domain.mjs";
+let mf, db, authCookie;
+const hash = (s) => createHash("sha256").update(s).digest("hex");
+const salt = "1234567890abcdef1234567890abcdef";
+const verifier = pbkdf2Sync(
+  "test-only-password-not-for-deployment",
+  Buffer.from(salt, "hex"),
+  600000,
+  32,
+  "sha256",
+).toString("hex");
+async function call(
+  path,
+  {
+    method = "GET",
+    data,
+    auth = false,
+    origin = "https://gp.test",
+    ip = "192.0.2.5",
+  } = {},
+) {
+  const response = await mf.dispatchFetch("https://gp.test" + path, {
+    method,
+    headers: {
+      ...(data !== undefined
+        ? { "Content-Type": "application/json", Origin: origin }
+        : {}),
+      ...(auth ? { Cookie: authCookie } : {}),
+      "CF-Connecting-IP": ip,
+    },
+    body: data !== undefined ? JSON.stringify(data) : undefined,
+  });
+  const body = await response.json();
+  return { response, body, status: response.status };
+}
+before(async () => {
+  const out = await build({
+    entryPoints: ["worker/index.mjs"],
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "browser",
+    target: "es2022",
+  });
+  mf = new Miniflare(
+    convertV4MiniflareOptions({
+      name: "test-worker",
+      modules: true,
+      script: out.outputFiles[0].text,
+      compatibilityDate: "2026-09-26",
+      d1Databases: ["DB"],
+      cf: false,
+    }),
+  );
+  db = await mf.getD1Database("DB", "test-worker");
+  const sql = await readFile("migrations/0001_initial.sql", "utf8");
+  await db.batch(
+    sql
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => db.prepare(s)),
+  );
+  await db
+    .prepare("INSERT INTO auth_users VALUES(?,?,?,600000)")
+    .bind("testadmin", salt, hash(verifier))
+    .run();
+  const rows = [
+    { site: "unknown.example.com" },
+    {
+      site: "pak.example.com",
+      country: "PK",
+      dr: "50",
+      traffic: "12K",
+      general_price: "100",
+      source_file: "supplier.xlsx",
+      sheet_name: "Tech",
+    },
+    {
+      site: "manual.example.com",
+      country: "USA",
+      dr: "80",
+      general_price: "95",
+      original_price: "80",
+      selling_price: "95",
+      manual_price: 1,
+      source_file: "supplier.xlsx",
+      sheet_name: "Tech",
+    },
+  ];
+  for (const data of rows) {
+    const r = prepareSite(data, { legacy: true }),
+      cols = Object.keys(r);
+    await db
+      .prepare(
+        `INSERT INTO sites(${cols.join(",")}) VALUES(${cols.map(() => "?")})`,
+      )
+      .bind(...cols.map((c) => r[c]))
+      .run();
+  }
+  const login = await call("/api/auth/login", {
+    method: "POST",
+    data: { username: "testadmin", verifier },
+  });
+  assert.equal(login.status, 200);
+  authCookie = login.response.headers.get("Set-Cookie").split(";")[0];
+  assert.match(
+    login.response.headers.get("Set-Cookie"),
+    /HttpOnly; SameSite=Strict.*Secure/,
+  );
+});
+after(async () => {
+  await mf?.dispose();
+});
+
+test("public search includes unknown metrics by default and excludes them only with explicit limits", async () => {
+  const all = await call("/api/sites?fresh=1");
+  assert.equal(all.status, 200);
+  assert.equal(all.body.total, 3);
+  assert.equal(all.body.rows[0].original_price, undefined);
+  assert.equal(all.body.rows[0].markup_percent, undefined);
+  const dr = await call("/api/sites?min_dr=45&fresh=1");
+  assert.equal(dr.body.total, 2);
+  const price = await call("/api/sites?max_price=100&fresh=1");
+  assert.equal(price.body.total, 1);
+  const pk = await call("/api/sites?country=Pakistan&page=99&limit=1&fresh=1");
+  assert.equal(pk.body.total, 1);
+  assert.equal(pk.body.page, 1);
+  assert.equal(pk.body.rows[0].domain, "pak.example.com");
+  const url = await call(
+    "/api/sites?q=" +
+      encodeURIComponent("https://www.pak.example.com/story?x=2") +
+      "&fresh=1",
+  );
+  assert.equal(url.body.total, 1);
+  const injected = await call(
+    "/api/sites?q=" + encodeURIComponent("%' OR 1=1 --") + "&fresh=1",
+  );
+  assert.equal(injected.body.total, 0);
+});
+test("private routes and writes require a server-verified session and same-origin JSON", async () => {
+  for (const p of [
+    "/api/admin/sites",
+    "/api/admin/resources/contacts",
+    "/api/admin/resources/vault",
+    "/api/admin/resources/messages",
+    "/api/admin/backup?table=sites",
+  ])
+    assert.equal((await call(p)).status, 401);
+  assert.equal(
+    (
+      await call("/api/admin/sites", {
+        method: "POST",
+        data: { site: "new.example.com" },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(
+    (
+      await call("/api/admin/sites", {
+        method: "POST",
+        data: { site: "new.example.com" },
+        auth: true,
+        origin: "https://evil.example",
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await call("/api/admin/sites", {
+        method: "POST",
+        data: { site: "javascript:alert(1)" },
+        auth: true,
+      })
+    ).status,
+    400,
+  );
+});
+test("repeated imports are idempotent and deliberate deletions survive re-import", async () => {
+  const row = {
+    site: "imported.example.com",
+    country: "UK",
+    general_price: "100",
+    source_file: "import.csv",
+    sheet_name: "CSV",
+  };
+  const first = await call("/api/admin/import", {
+    method: "POST",
+    data: { rows: [row] },
+    auth: true,
+  });
+  assert.equal(first.body.inserted, 1);
+  assert.equal(
+    (
+      await call("/api/admin/import", {
+        method: "POST",
+        data: { rows: [row] },
+        auth: true,
+      })
+    ).body.inserted,
+    0,
+  );
+  const found = await call("/api/admin/sites?q=imported.example.com", {
+    auth: true,
+  });
+  const record = found.body.rows[0];
+  assert.equal(record.general_price, "120.00");
+  assert.equal(record.country, "United Kingdom");
+  assert.equal(
+    (
+      await call("/api/admin/sites/" + record.id, {
+        method: "DELETE",
+        data: {},
+        auth: true,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await call("/api/admin/import", {
+        method: "POST",
+        data: { rows: [row] },
+        auth: true,
+      })
+    ).body.inserted,
+    0,
+  );
+});
+test("sheet markup is repeatable, keeps manual overrides and hides supplier costs publicly", async () => {
+  for (let i = 0; i < 2; i++)
+    assert.equal(
+      (
+        await call("/api/admin/pricing", {
+          method: "POST",
+          auth: true,
+          data: {
+            source_file: "supplier.xlsx",
+            sheet_name: "Tech",
+            markup_percent: 30,
+          },
+        })
+      ).status,
+      200,
+    );
+  const result = await call("/api/admin/sites?source_file=supplier.xlsx", {
+    auth: true,
+  });
+  assert.equal(
+    result.body.rows.find((r) => r.domain === "pak.example.com").general_price,
+    "130.00",
+  );
+  assert.equal(
+    result.body.rows.find((r) => r.domain === "manual.example.com")
+      .general_price,
+    "95",
+  );
+  const out = await call("/api/export");
+  assert.ok(out.body.rows.length >= 3);
+  assert.ok(
+    out.body.rows.every(
+      (r) => r.original_price === undefined && r.manual_price === undefined,
+    ),
+  );
+});
+test("private contacts, pipeline, inbox and media validation use the real D1 schema", async () => {
+  const c = await call("/api/admin/resources/contacts", {
+    method: "POST",
+    auth: true,
+    data: {
+      domain: "https://www.pak.example.com",
+      admin_name: "Private contact",
+      email: "private@example.com",
+      notes: "Private test note",
+    },
+  });
+  assert.equal(c.status, 200);
+  const result = await call("/api/admin/resources/contacts", { auth: true });
+  assert.equal(result.body.rows[0].domain, "pak.example.com");
+  assert.equal(result.body.rows[0].email, "private@example.com");
+  assert.equal(
+    (
+      await call("/api/admin/resources/contacts", {
+        method: "POST",
+        auth: true,
+        data: { domain: "pak.example.com", notes: "" },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await call("/api/admin/resources/contacts", { auth: true })).body.rows[0]
+      .notes,
+    "",
+  );
+  const note = {
+    source_file: "supplier.xlsx",
+    sheet_name: "Tech",
+    field_name: "Contact",
+    field_value: "reseller@example.com",
+  };
+  for (let i = 0; i < 2; i++)
+    assert.equal(
+      (
+        await call("/api/admin/resource-batch", {
+          method: "POST",
+          auth: true,
+          data: { resource: "resellers", rows: [note] },
+        })
+      ).status,
+      200,
+    );
+  assert.equal(
+    (await call("/api/admin/resources/resellers", { auth: true })).body.total,
+    1,
+  );
+  assert.equal(
+    (
+      await call("/api/admin/resources/pipeline", {
+        method: "POST",
+        auth: true,
+        data: {
+          site: "pak.example.com",
+          status: "Contacted",
+          next_follow_up: "2026-10-01",
+        },
+      })
+    ).status,
+    200,
+  );
+  const msg = await call("/api/contact", {
+    method: "POST",
+    data: {
+      full_name: "Test visitor",
+      message: "Test contact message",
+      email: "visitor@example.com",
+    },
+  });
+  assert.equal(msg.status, 201);
+  const inbox = await call("/api/admin/resources/messages", { auth: true });
+  assert.equal(inbox.body.total, 1);
+  assert.equal(
+    (
+      await call("/api/admin/media", {
+        method: "POST",
+        auth: true,
+        data: { key: "x", content_type: "image/svg+xml", data: "PHN2Zz4=" },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await call("/api/admin/metrics", {
+        method: "POST",
+        auth: true,
+        data: { site: "example.com" },
+      })
+    ).status,
+    503,
+  );
+});
+test("backups reject unknown tables and restore records without public exposure", async () => {
+  const state = await call("/api/admin/status", { auth: true });
+  assert.equal(
+    (await call("/api/admin/backup?table=auth_users", { auth: true })).status,
+    400,
+  );
+  assert.equal(
+    (await call("/api/admin/backup?table=sites&version=old", { auth: true }))
+      .status,
+    409,
+  );
+  const backup = await call(
+    "/api/admin/backup?table=contacts&version=" + state.body.version,
+    { auth: true },
+  );
+  assert.equal(backup.status, 200);
+  const merge = await call("/api/admin/restore", {
+    method: "POST",
+    auth: true,
+    data: {
+      table: "contacts",
+      rows: backup.body.rows,
+      confirm: "MERGE BACKUP",
+    },
+  });
+  assert.equal(merge.status, 200);
+  assert.equal(
+    (await call("/api/admin/resources/contacts", { auth: true })).body.total,
+    1,
+  );
+  assert.equal(
+    (
+      await call("/api/admin/restore", {
+        method: "POST",
+        auth: true,
+        data: { table: "auth_users", rows: [{}], confirm: "MERGE BACKUP" },
+      })
+    ).status,
+    400,
+  );
+});
+test("sign-out revokes the existing server session", async () => {
+  assert.equal(
+    (await call("/api/auth/me", { auth: true })).body.user.username,
+    "testadmin",
+  );
+  assert.equal(
+    (await call("/api/auth/logout", { method: "POST", auth: true, data: {} }))
+      .status,
+    200,
+  );
+  assert.equal((await call("/api/admin/status", { auth: true })).status, 401);
+});

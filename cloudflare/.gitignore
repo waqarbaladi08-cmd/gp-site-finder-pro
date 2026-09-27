@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.wrangler/
+.worker-build/
+.dev.vars*
+.env*
+private/
+wrangler.local.json
+*.log

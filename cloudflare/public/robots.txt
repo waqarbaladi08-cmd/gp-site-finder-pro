@@ -1,0 +1,7 @@
+User-agent: *
+Disallow: /api/
+Disallow: /login
+Disallow: /settings
+Disallow: /backup
+Disallow: /contacts
+Disallow: /vault
