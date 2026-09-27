@@ -6,7 +6,7 @@ Uses the **Workers Free** and **D1 Free** plans only. No card, R2, paid database
 
 ## Deploy from a fresh backup
 
-Requires Node.js 22.12+ (Node 24 tested), Python 3.10+, a Cloudflare account and this repository checked out on its Cloudflare branch.
+Requires Node.js 22.12+ (Node 24 tested), Python 3.10+, a Cloudflare account and the latest `main` branch of this repository.
 
 1. In the current Streamlit app, sign in as admin and download **Backup & Restore → backup ZIP**. Keep it private. A repository snapshot can be used for a preview, but it may not contain recent live changes or contacts.
 2. Open a terminal in `cloudflare/` and run:
@@ -35,13 +35,13 @@ Use these settings when connecting this repository to Workers Builds:
 | Setting | Value |
 | --- | --- |
 | Project / Worker name | `gp-site-finder-pro` |
-| Production branch | `codex/cloudflare-free-hosting-2026-09-27` |
+| Production branch | `main` |
 | Root directory | `cloudflare` |
 | Build command | `npm run build` |
 | Deploy command | `npm run deploy:ci` |
 | Node version | `24` (set by `.nvmrc`) |
 
-The deploy command applies pending schema migrations before publishing. It does not delete records, import a repository snapshot, or create a default admin. The build credential must allow D1 writes as well as Worker deployment; if Cloudflare reports a D1 permissions error, review the build token's permissions in the account instead of pasting the token into chat or committing it to Git.
+The deploy command applies pending schema migrations before publishing. It does not delete records, import a repository snapshot, or create a default admin. The build credential must allow D1 writes as well as Worker deployment. Cloudflare's automatically generated Workers Builds token does not include D1 permission by default, so add **Account: D1: Edit** to the build token in **My Profile > API Tokens**, or select an owner-created token with that permission before running this deploy command. Limit access to the account that owns this Worker and database. Keep the token in Cloudflare; do not paste it into chat or commit it to Git.
 
 This creates the application and empty database tables. A fresh Streamlit backup and a new admin account are still required before cutover. Run the setup procedure above to migrate the fresh backup and create the admin. Keep existing app links until the new site's records and admin access have been verified.
 
