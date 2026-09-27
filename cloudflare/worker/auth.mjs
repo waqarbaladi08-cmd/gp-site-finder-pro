@@ -79,11 +79,14 @@ export async function session(request, db) {
 export function cookie(request, token, seconds = 28800) {
   return `gp_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${seconds}${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
 }
-export async function login(request, env) {
-  const b = await body(request, 5000);
-  const username = String(b.username || "")
+export function normalizeUsername(value) {
+  return String(value || "")
     .trim()
     .slice(0, 100);
+}
+export async function login(request, env) {
+  const b = await body(request, 5000);
+  const username = normalizeUsername(b.username);
   const ip = await sha(request.headers.get("CF-Connecting-IP") || "local");
   await rateLimit(env.DB, `login-ip:${ip}`, 8, 900);
   await rateLimit(

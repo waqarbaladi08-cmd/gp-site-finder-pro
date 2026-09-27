@@ -132,6 +132,25 @@ after(async () => {
   await mf?.dispose();
 });
 
+test("mounted login uses the same username for its challenge and session when pasted with spaces", async () => {
+  const challenge = await call(
+    "/app/api/auth/challenge?username=%20testadmin%20",
+  );
+  assert.equal(challenge.status, 200);
+  assert.equal(challenge.body.salt, salt);
+  assert.equal(challenge.body.iterations, 600000);
+  const result = await call("/app/api/auth/login", {
+    method: "POST",
+    data: { username: " testadmin ", verifier },
+    origin: WEBSITE_ORIGIN,
+    ip: "192.0.2.111",
+  });
+  assert.equal(result.status, 200);
+  const sessionCookie = result.response.headers.get("Set-Cookie").split(";")[0];
+  const me = await call("/app/api/auth/me", { auth: sessionCookie });
+  assert.equal(me.body.user.username, "testadmin");
+});
+
 test("public search includes unknown metrics by default and excludes them only with explicit limits", async () => {
   const all = await call("/api/sites?fresh=1");
   assert.equal(all.status, 200);

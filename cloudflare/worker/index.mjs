@@ -18,6 +18,7 @@ import {
   same,
   rateLimit,
   setPassword,
+  normalizeUsername,
 } from "./auth.mjs";
 import { appBase, stripAppBase } from "../shared/routing.mjs";
 import { WEBSITE_ORIGIN, mountedResponse } from "./routing.mjs";
@@ -246,7 +247,7 @@ async function route(request, env, ctx, additionalOrigin) {
     return json({ ok: true, storage: "Cloudflare D1" });
   }
   if (p === "/api/auth/challenge" && m === "GET") {
-    const username = (url.searchParams.get("username") || "").slice(0, 100),
+    const username = normalizeUsername(url.searchParams.get("username")),
       user = await db
         .prepare("SELECT salt,iterations FROM auth_users WHERE username=?")
         .bind(username)

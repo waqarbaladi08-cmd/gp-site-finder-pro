@@ -393,8 +393,17 @@ export function TeamPage() {
           ))}
         </div>
       ) : (
-        <Empty icon={Users} title="Team profiles are being prepared">
-          Published team members will appear here.
+        <Empty icon={Users} title="No team members have been added yet">
+          <span>Add your team members and publish their profiles here.</span>
+          <button
+            className="primary"
+            onClick={() => go(user ? "team-admin" : "login")}
+          >
+            {user ? "Add team members" : "Sign in to add your team"}
+          </button>
+          <a href="https://gp-site-finder-pro-landing.vercel.app/team">
+            View the team on our website
+          </a>
         </Empty>
       )}
     </>
@@ -632,6 +641,8 @@ export function SettingsPage() {
 export function LoginPage() {
   const [username, setUsername] = useState(""),
     [password, setPassword] = useState(""),
+    [showPassword, setShowPassword] = useState(false),
+    [loginError, setLoginError] = useState(""),
     { user, loadAuth, go, notify } = useApp(),
     { busy, run } = useTask();
   return (
@@ -650,20 +661,33 @@ export function LoginPage() {
           onSubmit={(e) => {
             e.preventDefault();
             run(async () => {
-              const c = await api(
-                "/api/auth/challenge?" + new URLSearchParams({ username }),
-              );
-              await api("/api/auth/login", {
-                method: "POST",
-                body: {
-                  username,
-                  verifier: await derive(password, c.salt, c.iterations),
-                },
-              });
-              setPassword("");
-              await loadAuth();
-              go("manage");
-              notify("Signed in successfully.");
+              setLoginError("");
+              const loginUsername = username.trim();
+              setUsername(loginUsername);
+              try {
+                const c = await api(
+                  "/api/auth/challenge?" +
+                    new URLSearchParams({ username: loginUsername }),
+                );
+                await api("/api/auth/login", {
+                  method: "POST",
+                  body: {
+                    username: loginUsername,
+                    verifier: await derive(password, c.salt, c.iterations),
+                  },
+                });
+                setPassword("");
+                const signedInUser = await loadAuth();
+                if (!signedInUser)
+                  throw new Error(
+                    "Your credentials were accepted, but the browser session could not be confirmed. Allow cookies for this website and try again.",
+                  );
+                go("manage");
+                notify("Signed in successfully.");
+              } catch (error) {
+                setLoginError(error.message);
+                throw error;
+              }
             });
           }}
         >
@@ -672,6 +696,11 @@ export function LoginPage() {
           </div>
           <h2>Welcome back</h2>
           <p className="subtle">Sign in to your private workspace.</p>
+          <p className="subtle">
+            Use the app username you chose during setup. It may be different
+            from your Cloudflare email.
+          </p>
+          <ErrorBox error={loginError} />
           <Field
             label="Username"
             autoComplete="username"
@@ -681,12 +710,20 @@ export function LoginPage() {
           />
           <Field
             label="Password"
-            type="password"
+            type={showPassword ? "text" : "password"}
             autoComplete="current-password"
             required
             value={password}
             onChange={setPassword}
           />
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={showPassword}
+              onChange={(event) => setShowPassword(event.target.checked)}
+            />
+            Show password
+          </label>
           <button className="primary" disabled={busy}>
             {busy ? "Signing in…" : "Sign in"}
           </button>

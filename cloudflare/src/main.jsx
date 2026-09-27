@@ -67,6 +67,7 @@ const primary = [
   ["search", "Search websites", Search],
   ["saved", "Saved websites", Bookmark],
   ["outreach", "Publisher outreach", Mail],
+  ["team", "Our team", Users],
 ];
 const groups = [
   [
@@ -100,7 +101,6 @@ const groups = [
   [
     "Business",
     [
-      ["team", "Our team", Users],
       ["contact", "Contact us", Mail],
       ["profile", "Profile & contact", UserCircle],
     ],
@@ -388,8 +388,10 @@ function App() {
     try {
       const r = await api("/api/auth/me");
       setUser(r.user);
+      return r.user;
     } catch {
       setUser(null);
+      return null;
     } finally {
       setAuthLoading(false);
     }
