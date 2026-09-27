@@ -1,0 +1,29 @@
+# Paid compute prevents inactivity hibernation. Deploy only after cost approval.
+services:
+  - type: web
+    name: gp-site-finder-always-on
+    runtime: python
+    region: singapore
+    plan: 0.5c-512mb
+    numInstances: 1
+    autoDeployTrigger: "off"
+    buildCommand: pip install -r requirements-hosting.txt
+    startCommand: >-
+      python prepare_storage.py &&
+      python -m streamlit run app.py
+      --server.address 0.0.0.0
+      --server.port $PORT
+      --server.headless true
+      --browser.gatherUsageStats false
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.14
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: GP_STORAGE_DIR
+        value: /var/data/gp-site-finder
+    disk:
+      name: gp-site-finder-data
+      mountPath: /var/data
+      sizeGB: 1

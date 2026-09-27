@@ -29,7 +29,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-BASE_DIR = Path(__file__).resolve().parent
+# An always-on host can keep all databases, settings and uploads on a disk.
+# With no override, the existing Community Cloud storage layout is unchanged.
+BASE_DIR = Path(os.getenv("GP_STORAGE_DIR") or Path(__file__).resolve().parent).expanduser().resolve()
 DB_PATH = BASE_DIR / "database" / "local_sites.db"
 CONTACT_DB_PATH = BASE_DIR / "database" / "web_private_contacts.db"
 AUTH_PATH = BASE_DIR / "database" / "web_admin.json"

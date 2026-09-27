@@ -1,0 +1,5 @@
+# Direct dependencies verified for the always-on deployment.
+streamlit==1.64.0
+pandas==3.0.6
+openpyxl==3.1.5
+Pillow==12.3.0
