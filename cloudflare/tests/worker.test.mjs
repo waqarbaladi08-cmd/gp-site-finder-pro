@@ -5,6 +5,7 @@ import { createHash, pbkdf2Sync } from "node:crypto";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { prepareSite } from "../shared/domain.mjs";
+import { WEBSITE_ORIGIN } from "../worker/routing.mjs";
 let mf, db, authCookie;
 const hash = (s) => createHash("sha256").update(s).digest("hex");
 const salt = "1234567890abcdef1234567890abcdef";
@@ -31,7 +32,7 @@ async function call(
       ...(data !== undefined
         ? { "Content-Type": "application/json", Origin: origin }
         : {}),
-      ...(auth ? { Cookie: authCookie } : {}),
+      ...(auth ? { Cookie: typeof auth === "string" ? auth : authCookie } : {}),
       "CF-Connecting-IP": ip,
     },
     body: data !== undefined ? JSON.stringify(data) : undefined,
@@ -55,6 +56,18 @@ before(async () => {
       script: out.outputFiles[0].text,
       compatibilityDate: "2026-09-26",
       d1Databases: ["DB"],
+      serviceBindings: {
+        ASSETS: (request) => {
+          const path = new URL(request.url).pathname;
+          if (path === "/assets/test.js")
+            return new Response("export default 'asset';", { headers: { "Content-Type": "text/javascript" } });
+          if (path === "/index.html")
+            return new Response(null, { status: 302, headers: { Location: "/" } });
+          return new Response('<!doctype html><link href="./assets/test.css" rel="stylesheet"><link href="/favicon.svg"><script type="module" src="./assets/test.js"></script><a href="https://example.com/">External</a><a href="#main">Skip</a>', {
+            headers: { "Content-Type": "text/html", ETag: '"original"' },
+          });
+        },
+      },
       cf: false,
     }),
   );
@@ -420,4 +433,65 @@ test("sign-out revokes the existing server session", async () => {
     200,
   );
   assert.equal((await call("/api/admin/status", { auth: true })).status, 401);
+});
+
+test("website mount serves HTML, assets and API queries through the same origin", async () => {
+  for (const path of ["/app", "/app/", "/app/search", "/app/search/"]) {
+    const response = await mf.dispatchFetch("https://gp.test" + path);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Cache-Control"), "no-cache");
+    assert.equal(response.headers.get("ETag"), null);
+    const html = await response.text();
+    assert.match(html, /src="\/app\/assets\/test.js"/);
+    assert.match(html, /href="\/app\/assets\/test.css"/);
+    assert.match(html, /href="\/app\/favicon.svg"/);
+    assert.match(html, /href="https:\/\/example.com\/"/);
+    assert.match(html, /href="#main"/);
+  }
+  const asset = await mf.dispatchFetch("https://gp.test/app/assets/test.js");
+  assert.match(await asset.text(), /export default 'asset'/);
+  const redirect = await mf.dispatchFetch("https://gp.test/app/index.html", { redirect: "manual" });
+  assert.equal(redirect.headers.get("Location"), "/app/");
+  assert.equal((await call("/app/api/health")).body.ok, true);
+  const filtered = await call("/app/api/sites?q=pak.example.com&fresh=1");
+  assert.equal(filtered.body.total, 1);
+  assert.equal(filtered.body.rows[0].domain, "pak.example.com");
+  assert.equal(filtered.response.headers.get("Cache-Control"), "no-store");
+  assert.equal((await call("/app/api/admin/status")).status, 401);
+  const root = await mf.dispatchFetch("https://gp.test/search");
+  assert.match(await root.text(), /src="\.\/assets\/test.js"/);
+});
+
+test("proxy login cookies authenticate and logout while foreign origins stay rejected", async () => {
+  const credentials = { username: "testadmin", verifier };
+  const login = await call("/app/api/auth/login", {
+    method: "POST", data: credentials, origin: WEBSITE_ORIGIN, ip: "192.0.2.20",
+  });
+  assert.equal(login.status, 200);
+  const setCookie = login.response.headers.get("Set-Cookie");
+  assert.match(setCookie, /HttpOnly; SameSite=Strict.*Secure/);
+  assert.doesNotMatch(setCookie, /Domain=/i);
+  const auth = setCookie.split(";")[0];
+  assert.equal((await call("/app/api/auth/me", { auth })).body.user.username, "testadmin");
+  assert.equal((await call("/app/api/admin/status", { auth })).status, 200);
+  for (const origin of ["https://evil.example", WEBSITE_ORIGIN + ".evil.example", "null"]) {
+    assert.equal((await call("/app/api/auth/logout", { method: "POST", data: {}, auth, origin })).status, 403);
+  }
+  assert.equal((await call("/api/auth/login", { method: "POST", data: credentials, origin: WEBSITE_ORIGIN })).status, 403);
+  const forged = await mf.dispatchFetch("https://gp.test/app/api/auth/logout", {
+    method: "POST",
+    headers: { Origin: "https://evil.example", "Content-Type": "application/json", "X-Forwarded-Host": "gp-site-finder-pro-landing.vercel.app", Cookie: auth },
+    body: "{}",
+  });
+  assert.equal(forged.status, 403);
+  const noOrigin = await mf.dispatchFetch("https://gp.test/app/api/auth/logout", {
+    method: "POST", headers: { "Content-Type": "application/json", Cookie: auth }, body: "{}",
+  });
+  assert.equal(noOrigin.status, 403);
+  const wrongType = await mf.dispatchFetch("https://gp.test/app/api/auth/logout", {
+    method: "POST", headers: { Origin: WEBSITE_ORIGIN, "Content-Type": "text/plain", Cookie: auth }, body: "{}",
+  });
+  assert.equal(wrongType.status, 415);
+  assert.equal((await call("/app/api/auth/logout", { method: "POST", data: {}, auth, origin: WEBSITE_ORIGIN })).status, 200);
+  assert.equal((await call("/app/api/admin/status", { auth })).status, 401);
 });

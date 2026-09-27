@@ -16,6 +16,7 @@ import {
   useData,
   useTask,
   api,
+  appPath,
   Loading,
   ErrorBox,
   Empty,
@@ -93,7 +94,7 @@ export function PhotoField({ value, onChange }) {
   const { busy, run } = useTask();
   return (
     <div className="photo-field">
-      {value && <img src={value} alt="Profile preview" />}
+      {value && <img src={appPath(value)} alt="Profile preview" />}
       <label className="file-button">
         <Upload size={17} />
         {busy ? "Uploading…" : "Upload photo"}
@@ -364,7 +365,7 @@ export function TeamPage() {
           {data.map((r) => (
             <article key={r.id} className="panel team-card">
               {r.image_path ? (
-                <img src={r.image_path} alt={r.full_name} />
+                <img src={appPath(r.image_path)} alt={r.full_name} />
               ) : (
                 <div className="avatar">{r.full_name.slice(0, 1)}</div>
               )}
@@ -486,7 +487,7 @@ export function ProfilePage() {
         <article className="panel form-panel narrow profile-card">
           {data.image_path && (
             <img
-              src={data.image_path}
+              src={appPath(data.image_path)}
               alt={data.name || "Profile"}
               className="profile-photo"
             />

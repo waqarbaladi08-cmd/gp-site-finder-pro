@@ -33,6 +33,7 @@ import {
   useApp,
   useData,
   api,
+  appPath,
   Loading,
   ErrorBox,
   Heading,
@@ -40,6 +41,7 @@ import {
   formatNumber,
 } from "./lib.jsx";
 import { SearchPage, SiteTable } from "./sites.jsx";
+import { stripAppBase } from "../shared/routing.mjs";
 import "./style.css";
 const modulePage = (file, name) =>
   lazy(() => file().then((m) => ({ default: m[name] })));
@@ -144,7 +146,7 @@ function currentPage() {
   const query = new URLSearchParams(location.search).get("page");
   const p = query
     ? legacy[query] || query
-    : location.pathname.slice(1) || "home";
+    : stripAppBase(location.pathname).replace(/^\/+|\/+$/g, "") || "home";
   return labels[p] ? p : "home";
 }
 function Dashboard({ statistics = false }) {
@@ -375,7 +377,7 @@ function App() {
     history.pushState(
       {},
       "",
-      `/${next === "home" ? "" : next}${q.size ? "?" + q : ""}`,
+      appPath(`/${next === "home" ? "" : next}${q.size ? "?" + q : ""}`),
     );
     setPage(next);
     setRouteKey(location.href);
@@ -439,7 +441,7 @@ function App() {
   const nav = ([p, name, Icon]) => (
     <a
       key={p}
-      href={"/" + (p === "home" ? "" : p)}
+      href={appPath("/" + (p === "home" ? "" : p))}
       className={"nav-link " + (page === p ? "current" : "")}
       aria-current={page === p ? "page" : undefined}
       onClick={(e) => {
@@ -481,7 +483,7 @@ function App() {
       )}
       <aside className={"sidebar " + (mobile ? "is-open" : "")}>
         <a
-          href="/"
+          href={appPath("/")}
           className="brand"
           onClick={(e) => {
             e.preventDefault();

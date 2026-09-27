@@ -19,6 +19,8 @@ import {
   rateLimit,
   setPassword,
 } from "./auth.mjs";
+import { appBase, stripAppBase } from "../shared/routing.mjs";
+import { WEBSITE_ORIGIN, mountedResponse } from "./routing.mjs";
 
 const json = (data, status = 200, headers = {}) =>
   Response.json(data, {
@@ -232,13 +234,13 @@ function resourceRow(resource, input) {
       row[key] = key === "created_at" ? row[key] || now() : now();
   return row;
 }
-async function route(request, env, ctx) {
+async function route(request, env, ctx, additionalOrigin) {
   const url = new URL(request.url),
     p = url.pathname,
     m = request.method,
     db = env.DB;
   if (!p.startsWith("/api/")) return env.ASSETS.fetch(request);
-  if (m !== "GET" && m !== "HEAD") originCheck(request);
+  if (m !== "GET" && m !== "HEAD") originCheck(request, additionalOrigin);
   if (p === "/api/health" && m === "GET") {
     await db.prepare("SELECT 1").first();
     return json({ ok: true, storage: "Cloudflare D1" });
@@ -745,7 +747,14 @@ async function route(request, env, ctx) {
 export default {
   async fetch(request, env, ctx) {
     try {
-      return await route(request, env, ctx);
+      const url = new URL(request.url);
+      const base = appBase(url.pathname);
+      if (base) {
+        url.pathname = stripAppBase(url.pathname);
+        request = new Request(url, request);
+      }
+      const response = await route(request, env, ctx, base ? WEBSITE_ORIGIN : undefined);
+      return mountedResponse(response, base);
     } catch (error) {
       if (error.status) return json({ error: error.message }, error.status);
       // No request bodies, secrets or contact data are logged.

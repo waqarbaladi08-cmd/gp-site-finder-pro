@@ -1,9 +1,12 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { LoaderCircle, X, AlertCircle, LockKeyhole } from "lucide-react";
+import { appBase, withAppBase } from "../shared/routing.mjs";
+const base = appBase(location.pathname);
+export const appPath = (path) => withAppBase(path, base);
 export const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 export async function api(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetch(appPath(path), {
     ...options,
     headers: {
       ...(options.body ? { "Content-Type": "application/json" } : {}),

@@ -16,8 +16,9 @@ export function same(a, b) {
 export function fail(message, status = 400) {
   throw Object.assign(new Error(message), { status });
 }
-export function originCheck(request) {
-  if (request.headers.get("Origin") !== new URL(request.url).origin)
+export function originCheck(request, additionalOrigin) {
+  const origin = request.headers.get("Origin");
+  if (origin !== new URL(request.url).origin && origin !== additionalOrigin)
     fail("This action must come from this website.", 403);
   if (!request.headers.get("Content-Type")?.startsWith("application/json"))
     fail("JSON body required.", 415);
