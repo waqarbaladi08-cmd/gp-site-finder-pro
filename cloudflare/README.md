@@ -26,6 +26,25 @@ The setup script runs tests, creates/binds D1, applies the schema, migrates reco
 
 For subsequent code updates, run `npm ci && npm run check && npm run deploy`. Schema changes must use a new migration followed by `npm run db:remote`. Keep the existing `wrangler.jsonc` database ID.
 
+## Cloudflare dashboard / GitHub deployment
+
+The owner-created D1 database is `gp-site-finder-pro`, ID `a79b65f4-49c6-462b-b6f0-a478b4230465`. Its `DB` binding is already configured in `wrangler.jsonc`. The database ID is an identifier, not an API credential.
+
+Use these settings when connecting this repository to Workers Builds:
+
+| Setting | Value |
+| --- | --- |
+| Project / Worker name | `gp-site-finder-pro` |
+| Production branch | `codex/cloudflare-free-hosting-2026-09-27` |
+| Root directory | `cloudflare` |
+| Build command | `npm run build` |
+| Deploy command | `npm run deploy:ci` |
+| Node version | `24` (set by `.nvmrc`) |
+
+The deploy command applies pending schema migrations before publishing. It does not delete records, import a repository snapshot, or create a default admin. The build credential must allow D1 writes as well as Worker deployment; if Cloudflare reports a D1 permissions error, review the build token's permissions in the account instead of pasting the token into chat or committing it to Git.
+
+This creates the application and empty database tables. A fresh Streamlit backup and a new admin account are still required before cutover. Run the setup procedure above to migrate the fresh backup and create the admin. Keep existing app links until the new site's records and admin access have been verified.
+
 ## Local preview
 
 ```sh

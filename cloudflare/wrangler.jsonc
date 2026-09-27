@@ -8,15 +8,15 @@
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"],
+    "run_worker_first": ["/api/*"]
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "gp-site-finder-pro",
-      "database_id": "00000000-0000-0000-0000-000000000000",
-      "migrations_dir": "migrations",
-    },
+      "database_id": "a79b65f4-49c6-462b-b6f0-a478b4230465",
+      "migrations_dir": "migrations"
+    }
   ],
-  "observability": { "enabled": false },
+  "observability": { "enabled": false }
 }
