@@ -14,6 +14,7 @@ import urllib.request
 import urllib.error
 
 import pandas as pd
+from admin_auth import load_admin_credentials, verify_admin, admin_session_valid
 from workspace_helpers import normalize_country, metric_mask, PRIMARY_PAGES, TOOL_PAGES, resolve_page
 import streamlit as st
 from PIL import Image
@@ -58,6 +59,20 @@ def _secret_or_env(name: str) -> str:
 SUPABASE_URL = _secret_or_env("SUPABASE_URL").rstrip("/")
 SUPABASE_SECRET_KEY = _secret_or_env("SUPABASE_SECRET_KEY")
 AHREFS_API_KEY = _secret_or_env("AHREFS_API_KEY")
+
+
+def current_admin_credentials():
+    try:
+        password = os.environ.get("GP_ADMIN_PASSWORD")
+        if password is None:
+            try:
+                password = st.secrets.get("GP_ADMIN_PASSWORD", None)
+            except FileNotFoundError:
+                password = None
+        return load_admin_credentials(AUTH_PATH, password)
+    except Exception:
+        # Do not reveal secret values or fall back after a malformed secrets file.
+        return None
 
 
 # =========================================================
@@ -1126,9 +1141,7 @@ def ensure_databases() -> None:
             json.dumps(
                 {
                     "username": "admin",
-                    "password_hash": hashlib.sha256(
-                        "admin123".encode("utf-8")
-                    ).hexdigest(),
+                    "password_hash": "",
                 },
                 indent=2,
             ),
@@ -2867,8 +2880,10 @@ def open_more_tool() -> None:
 
 
 # Keep page state independent of navigation widgets, including deep links from the website.
-if "admin_logged_in" not in st.session_state:
+admin_credentials = current_admin_credentials()
+if not admin_session_valid(st.session_state, admin_credentials):
     st.session_state.admin_logged_in = False
+    st.session_state.pop("admin_auth_revision", None)
 if "nav_page" not in st.session_state:
     st.session_state["nav_page"] = resolve_page(st.query_params.get("page", "home"))
     if st.query_params.get("q"):
@@ -6192,23 +6207,24 @@ elif page == "Admin Login":
         st.success("✅ Admin already logged in.")
         if st.button("🔒 Logout", width="stretch"):
             st.session_state.admin_logged_in = False
+            st.session_state.pop("admin_auth_revision", None)
             st.rerun()
     else:
         username = st.text_input("Username", value="admin")
         password = st.text_input("Password", type="password")
 
         if st.button("🔓 Login", type="primary", width="stretch"):
-            auth = json.loads(AUTH_PATH.read_text(encoding="utf-8"))
-            password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-            if username == auth["username"] and password_hash == auth["password_hash"]:
+            if admin_credentials is None:
+                st.error("Admin password configure nahi hai. App owner Streamlit Settings → Secrets mein GP_ADMIN_PASSWORD set karein (minimum 12 characters).")
+            elif verify_admin(admin_credentials, username, password):
                 st.session_state.admin_logged_in = True
+                st.session_state.admin_auth_revision = admin_credentials.revision
                 st.success("✅ Login successful.")
                 st.rerun()
             else:
                 st.error("❌ Wrong username or password.")
 
-    st.caption("Default login: admin / admin123")
+    st.caption("Password bhool gaye? App owner apne Streamlit account mein Settings → Secrets se GP_ADMIN_PASSWORD set karke reset kar sakte hain.")
 
 
 # =========================================================
@@ -6430,25 +6446,29 @@ elif page == "Settings":
                 st.rerun()
 
         st.markdown("### Change Admin Password")
-        with st.form("change_password_form"):
-            current_password = st.text_input("Current Password", type="password")
-            new_password = st.text_input("New Password", type="password")
-            confirm_password = st.text_input("Confirm New Password", type="password")
-            change = st.form_submit_button("Change Password", type="primary")
+        if admin_credentials and admin_credentials.managed_in_secrets:
+            st.info("Password Streamlit account ki Settings → Secrets mein manage hota hai. GP_ADMIN_PASSWORD update karein; minimum 12 characters.")
+        else:
+            with st.form("change_password_form"):
+                current_password = st.text_input("Current Password", type="password")
+                new_password = st.text_input("New Password", type="password")
+                confirm_password = st.text_input("Confirm New Password", type="password")
+                change = st.form_submit_button("Change Password", type="primary")
 
-        if change:
-            auth = json.loads(AUTH_PATH.read_text(encoding="utf-8"))
-            current_hash = hashlib.sha256(current_password.encode("utf-8")).hexdigest()
+            if change:
+                auth = json.loads(AUTH_PATH.read_text(encoding="utf-8"))
+                current_hash = hashlib.sha256(current_password.encode("utf-8")).hexdigest()
 
-            if current_hash != auth["password_hash"]:
-                st.error("Current password ghalat hai.")
-            elif len(new_password) < 8:
-                st.error("New password minimum 8 characters ka ho.")
-            elif new_password != confirm_password:
-                st.error("New passwords match nahi karte.")
-            else:
-                auth["password_hash"] = hashlib.sha256(
-                    new_password.encode("utf-8")
-                ).hexdigest()
-                AUTH_PATH.write_text(json.dumps(auth, indent=2), encoding="utf-8")
-                st.success("✅ Password change ho gaya.")
+                if current_hash != auth["password_hash"]:
+                    st.error("Current password ghalat hai.")
+                elif len(new_password) < 12:
+                    st.error("New password minimum 12 characters ka ho.")
+                elif new_password != confirm_password:
+                    st.error("New passwords match nahi karte.")
+                else:
+                    auth["password_hash"] = hashlib.sha256(
+                        new_password.encode("utf-8")
+                    ).hexdigest()
+                    AUTH_PATH.write_text(json.dumps(auth, indent=2), encoding="utf-8")
+                    st.session_state.admin_auth_revision = current_admin_credentials().revision
+                    st.success("✅ Password change ho gaya.")
