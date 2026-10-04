@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { scanSheet, parseCSV } from "../shared/import.mjs";
-import { extractContacts, normalizePhone, mergeContacts } from "../shared/contacts.mjs";
+import { extractContacts, normalizePhone, mergeContacts, contactSummary, sheetContactNote } from "../shared/contacts.mjs";
 import { cellText, readWorkbook } from "../src/workbook.mjs";
 import ExcelJS from "exceljs";
 
@@ -69,4 +69,45 @@ test("Excel hyperlinks, formula results, rich text and multi-sheet files retain 
   assert.equal(r.contacts[0].phone, "03001234567");
   assert.equal(cellText({ value: { formula: '"a@example.com"', result: "a@example.com" } }), "a@example.com");
   assert.deepEqual(parseCSV('Website\tEmail\nexample.com\t"a@example.com\nb@example.com"', "\t"), [["Website", "Email"], ["example.com", "a@example.com\nb@example.com"]]);
+});
+
+test("contact-only sheets auto-detect formatted local phones and retain every contact without a website", () => {
+  const r = scanSheet([
+    ["Name", "Gmail", "Mobile No", "WhatsApp", "Traffic", "Price"],
+    ["Sheet owner", "owner@gmail.com", "0300-1234567", "0044 7700 900123", "12345678901", "9876543210"],
+    ["Editor", "editor@example.com", "(202) 555-0143", "", "", ""],
+  ], "contacts-only.xlsx", "Team");
+  assert.equal(r.header_row, 1);
+  assert.equal(r.contacts.length, 0);
+  assert.equal(r.unassigned.length, 2);
+  assert.equal(r.unassigned[0].phone, "03001234567");
+  assert.equal(r.unassigned[0].whatsapp, "+447700900123");
+  assert.equal(r.unassigned[1].phone, "2025550143");
+  assert.equal(r.unassigned[0].admin_name, "Sheet owner");
+  assert.equal(r.privateFields.length, 2);
+  assert.deepEqual(r.privateFields[0], sheetContactNote(r.unassigned[0]));
+  assert.match(r.privateFields[0].field_value, /owner@gmail.com/);
+  assert.equal(r.privateFields[0].source_file, "contacts-only.xlsx");
+  assert.equal(r.privateFields[0].sheet_name, "Team");
+  assert.deepEqual(contactSummary([r]), {
+    contacts: [], unassigned: r.unassigned, all: r.unassigned, emails: 2, phones: 3,
+  });
+  const single = scanSheet([["Mobile"], ["0300-1234567"]], "numbers.csv", "Phones");
+  assert.equal(single.unassigned[0].phone, "03001234567");
+  assert.equal(single.privateFields.length, 1);
+});
+
+test("automatic totals count unique contacts across sheets and pre-header phone-only rows are retained", () => {
+  const r = scanSheet([
+    ["+44 7700 900123"],
+    ["Website", "Email", "Phone"],
+    ["publisher.example.com", "hello@example.com", "+44 7700 900123"],
+  ], "auto.csv", "Sheet");
+  assert.equal(r.header_row, 2);
+  assert.equal(r.privateFields.length, 1);
+  assert.match(r.privateFields[0].field_value, /447700900123/);
+  const summary = contactSummary([r, { contacts: [], unassigned: [{ email: "HELLO@example.com", whatsapp: "+447700900123" }] }]);
+  assert.equal(summary.contacts.length, 1);
+  assert.equal(summary.emails, 1);
+  assert.equal(summary.phones, 1);
 });

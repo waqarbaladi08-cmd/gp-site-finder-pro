@@ -65,6 +65,32 @@ export function hasContact(row) {
   return ["email", "phone", "whatsapp", "telegram", "contact_url"].some((k) => text(row[k]));
 }
 
+export function contactSummary(reports) {
+  const byDomain = new Map();
+  for (const report of reports) for (const row of report.contacts || [])
+    byDomain.set(row.domain, mergeContacts(byDomain.get(row.domain), row));
+  const contacts = [...byDomain.values()];
+  const unassigned = reports.flatMap((r) => r.unassigned || []);
+  const all = [...contacts, ...unassigned];
+  return {
+    contacts, unassigned, all,
+    emails: unique(all.flatMap((r) => splitValues(r.email))).length,
+    phones: unique(all.flatMap((r) => [...splitValues(r.phone), ...splitValues(r.whatsapp)])).length,
+  };
+}
+
+// Keep sheet contacts even when there is no publisher domain to assign.
+// The existing private-notes store deduplicates identical imports.
+export function sheetContactNote(record) {
+  return {
+    source_file: record.source_file || "Uploaded sheet",
+    sheet_name: record.sheet_name || "",
+    field_name: `Detected sheet contact${record.row ? ` (row ${record.row})` : ""}`,
+    field_value: CONTACT_FIELDS.filter((key) => record[key])
+      .map((key) => `${key}: ${record[key]}`).join(" | "),
+  };
+}
+
 export function mergeContacts(old = {}, incoming = {}) {
   const result = { ...old, domain: domain(incoming.domain || old.domain) };
   for (const k of CONTACT_FIELDS) {
@@ -96,7 +122,8 @@ export function analyzeContactRows(raw, source, sheet, header = -1, mapping = []
     const found = extractContacts(cells, fields);
     if (!hasContact(found) && !found.admin_name) return;
     const d = detectRowDomain(cells, fields);
-    const record = { ...found, domain: d, notes: `Sheet: ${source} / ${sheet} / row ${index + 1}`, row: index + 1 };
+    const record = { ...found, domain: d, source_file: source, sheet_name: sheet,
+      notes: `Sheet: ${source} / ${sheet} / row ${index + 1}`, row: index + 1 };
     if (d) byDomain.set(d, mergeContacts(byDomain.get(d), record));
     else if (hasContact(found)) unassigned.push(record);
   });

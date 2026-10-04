@@ -5,6 +5,8 @@ import { createHash, pbkdf2Sync } from "node:crypto";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { prepareSite } from "../shared/domain.mjs";
+import { scanSheet } from "../shared/import.mjs";
+import { sheetContactNote } from "../shared/contacts.mjs";
 import { WEBSITE_ORIGIN } from "../worker/routing.mjs";
 let mf, db, authCookie;
 const hash = (s) => createHash("sha256").update(s).digest("hex");
@@ -470,6 +472,26 @@ test("private contact analyzer merges phones and emails, preserves manual fields
   assert.equal(backup.body.rows.find((r) => r.domain === sample.domain).phone, sample.phone);
   assert.equal((await call(route, { method: "POST", auth: true, data: { rows: [{ domain: "not a domain", phone: "123" }] } })).status, 400);
   assert.equal((await call("/api/admin/contacts/sources?table=auth_users", { auth: true })).status, 400);
+});
+
+test("automatically detected sheet-only contacts save privately without a domain and repeated saves deduplicate", async () => {
+  const report = scanSheet([
+    ["Name", "Email", "Mobile"],
+    ["Sheet supplier", "auto-private@example.com", "0300-1234567"],
+  ], "contact-only.csv", "Team");
+  const notes = report.unassigned.map(sheetContactNote);
+  assert.equal(notes.length, 1);
+  const request = { method: "POST", auth: true, data: { resource: "resellers", rows: notes } };
+  assert.equal((await call("/api/admin/resource-batch", { ...request, auth: false })).status, 401);
+  for (let i = 0; i < 2; i++) assert.equal((await call("/api/admin/resource-batch", request)).status, 200);
+  const count = await db.prepare("SELECT COUNT(*) AS n FROM reseller_private WHERE source_file='contact-only.csv'").first();
+  assert.equal(count.n, 1);
+  const stored = await call("/api/admin/contacts/sources?table=reseller_private", { auth: true });
+  assert.match(stored.body.rows.find((r) => r.source_file === "contact-only.csv").field_value, /auto-private@example.com/);
+  const publisherCount = await db.prepare("SELECT COUNT(*) AS n FROM contacts WHERE email LIKE '%auto-private%'").first();
+  assert.equal(publisherCount.n, 0);
+  for (const path of ["/api/sites", "/api/export", "/api/stats", "/api/options"])
+    assert.doesNotMatch(JSON.stringify((await call(path)).body), /auto-private|03001234567/);
 });
 
 test("sign-out revokes the existing server session", async () => {

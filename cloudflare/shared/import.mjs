@@ -1,5 +1,5 @@
 import { domain, text } from "./domain.mjs";
-import { analyzeContactRows } from "./contacts.mjs";
+import { analyzeContactRows, sheetContactNote } from "./contacts.mjs";
 export const IMPORT_FIELDS = [
   "site",
   "country",
@@ -33,7 +33,7 @@ const patterns = [
   ["whatsapp", /whats ?app/],
   ["phone", /phone|mobile|telephone|cell|contact (?:no|number)|^contact$|^tel$|فون|موبائل/],
   ["telegram", /telegram/],
-  ["admin_name", /owner|contact name|admin name|publisher name/],
+  ["admin_name", /owner|contact name|admin name|publisher name|^(?:full )?name$/],
 ];
 export function headerField(value) {
   const s = text(value)
@@ -45,9 +45,11 @@ export function headerField(value) {
 }
 export function detectHeader(rows) {
   let best = -1,
-    score = -1;
+    score = -1, contactBest = -1, contactScore = -1;
   rows.slice(0, 100).forEach((row, i) => {
-    const fields = new Set(row.map(headerField).filter(Boolean));
+    // Values containing an address or phone are data, not header labels.
+    const fields = new Set(row.map((cell) => /@|https?:\/\/|\d{3}/i.test(text(cell))
+      ? "" : headerField(cell)).filter(Boolean));
     if (fields.has("site")) {
       const s = fields.size * 3 + (fields.has("general_price") ? 4 : 0);
       if (s > score) {
@@ -55,8 +57,14 @@ export function detectHeader(rows) {
         score = s;
       }
     }
+    const contactFields = [...fields].filter((field) => ["email", "phone", "whatsapp", "telegram", "contact_url"].includes(field));
+    const singleContactLabel = row.filter((cell) => text(cell)).length === 1 && row.some((cell) =>
+      /^(?:e[ -]?mail(?: address| id)?|gmail|phone(?: number| no)?|mobile(?: number| no)?|contact(?: number| no)?|whats ?app(?: number| no)?|telephone|tel)[\s.#:]*$/i.test(text(cell)));
+    if (contactFields.length && (fields.size >= 2 || singleContactLabel) && fields.size > contactScore) {
+      contactBest = i; contactScore = fields.size;
+    }
   });
-  return best;
+  return best >= 0 ? best : contactBest;
 }
 export function parseCSV(input, delimiter = ",") {
   const rows = [];
@@ -92,7 +100,7 @@ export function scanSheet(raw, source_file, sheet_name, override = null) {
   const header = override ?? detectHeader(raw),
     mapping = header >= 0 ? raw[header].map(headerField) : [],
     rows = [],
-    privateFields = [];
+    privateFields = [], retainedRows = new Set();
   const { contacts, unassigned } = analyzeContactRows(raw, source_file, sheet_name, header, mapping);
   let invalid = 0;
   if (header >= 0) {
@@ -114,29 +122,26 @@ export function scanSheet(raw, source_file, sheet_name, override = null) {
       });
     }
   }
-  for (const row of raw.slice(
+  for (const [index, row] of raw.slice(
     0,
     header < 0 ? Math.min(raw.length, 100) : header,
-  )) {
+  ).entries()) {
     const value = row.map(text).filter(Boolean).join(" | ");
     if (
       value &&
       /email|whatsapp|contact|phone|telegram|paypal|bank|iban|@/i.test(value)
-    )
+    ) {
       privateFields.push({
         source_file,
         sheet_name,
         field_name: "Sheet contact / payment note",
         field_value: value.slice(0, 2000),
       });
+      retainedRows.add(index + 1);
+    }
   }
-  for (const record of unassigned.filter((r) => r.row > header + 1)) {
-    privateFields.push({ source_file, sheet_name,
-      field_name: `Unassigned contact candidates (row ${record.row})`,
-      field_value: ["email", "phone", "whatsapp", "telegram", "contact_url"]
-        .filter((k) => record[k]).map((k) => `${k}: ${record[k]}`).join(" | ").slice(0, 2000),
-    });
-  }
+  for (const record of unassigned.filter((r) => !retainedRows.has(r.row)))
+    privateFields.push(sheetContactNote(record));
   return {
     source_file,
     sheet_name,

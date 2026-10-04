@@ -18,6 +18,7 @@ import {
   IMPORT_FIELDS,
 } from "../shared/import.mjs";
 import { readWorkbook } from "./workbook.mjs";
+import { contactSummary } from "../shared/contacts.mjs";
 import { outreach } from "../shared/outreach.mjs";
 import { BACKUP_TABLES, RESOURCES, domain } from "../shared/domain.mjs";
 import {
@@ -223,6 +224,7 @@ export function ImportPage() {
     { refresh, notify } = useApp(),
     { busy, run } = useTask();
   const total = reports.reduce((n, r) => n + r.rows.length, 0),
+    detected = contactSummary(reports),
     privateCount = reports.reduce(
       (n, r) => n + r.contacts.length + r.privateFields.length,
       0,
@@ -259,14 +261,14 @@ export function ImportPage() {
             source_file: filename,
             sheet_name: report.sheet_name,
             header_row: report.header_row,
-            status: report.rows.length ? "Imported" : "No valid website table",
+            status: report.rows.length ? "Imported" : report.unassigned.length ? "Contacts imported" : "No valid website table",
             mapped_fields: JSON.stringify(report.mapping),
             private_count: report.contacts.length + report.privateFields.length,
           },
         ]);
       }
       setProgress(
-        `${inserted.toLocaleString()} websites added. ${(total - inserted).toLocaleString()} existing or previously deleted listings skipped.`,
+        `${inserted.toLocaleString()} websites added. ${(total - inserted).toLocaleString()} existing or previously deleted listings skipped. ${detected.emails} email addresses and ${detected.phones} phone / WhatsApp numbers saved privately.`,
       );
       setComplete(true);
       refresh();
@@ -275,27 +277,31 @@ export function ImportPage() {
   return (
     <>
       <Heading title="Import Excel / CSV" eyebrow="GROW YOUR DIRECTORY">
-        Preview each sheet before adding websites and private contact details.
+        Email, phone and WhatsApp details are detected automatically on upload and saved privately with the import, even without a website column.
       </Heading>
       <label className={"upload-zone " + (busy ? "disabled" : "")}>
         <UploadCloud size={36} />
         <strong>{filename || "Choose a publisher spreadsheet"}</strong>
-        <span>.xlsx or .csv · up to 20 MB · multiple sheets supported</span>
+        <span>.xlsx, .csv or .tsv · up to 20 MB · all sheets scanned automatically</span>
         <input
           type="file"
-          accept=".xlsx,.csv"
+          accept=".xlsx,.csv,.tsv"
+          aria-label="Upload publisher spreadsheet"
           disabled={busy}
           onChange={(e) =>
             run(async () => {
               const file = e.target.files[0];
               if (!file) return;
+              e.target.value = "";
               setProgress("Reading spreadsheet…");
               setFilename(file.name);
               const s = await readWorkbook(file);
               setSheets(s);
-              setReports(s.map((x) => scanSheet(x.rows, file.name, x.name)));
+              const next = s.map((x) => scanSheet(x.rows, file.name, x.name));
+              setReports(next);
+              const found = contactSummary(next);
               setComplete(false);
-              setProgress("Review the detected headers below.");
+              setProgress(`Automatically detected ${found.emails} email addresses and ${found.phones} phone / WhatsApp numbers. Review the preview, then import to save them privately.`);
             })
           }
         />
@@ -313,8 +319,12 @@ export function ImportPage() {
               <strong>{total.toLocaleString()}</strong>
             </div>
             <div className="stat-card">
-              <small>Private contact records</small>
-              <strong>{privateCount.toLocaleString()}</strong>
+              <small>Emails detected</small>
+              <strong>{detected.emails.toLocaleString()}</strong>
+            </div>
+            <div className="stat-card">
+              <small>Phone / WhatsApp numbers</small>
+              <strong>{detected.phones.toLocaleString()}</strong>
             </div>
             <div className="stat-card">
               <small>Sheets scanned</small>
@@ -393,8 +403,7 @@ export function ImportPage() {
                 </div>
               ) : (
                 <Notice>
-                  No website column detected. Choose the correct header row or
-                  rename it “Website”.
+                  {r.unassigned.length ? `${r.unassigned.length} sheet contact entries detected. They will be saved privately without a website assignment.` : "No website column detected. Contact and payment notes will still be kept privately."}
                 </Notice>
               )}
             </section>
