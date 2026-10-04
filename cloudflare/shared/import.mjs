@@ -1,4 +1,5 @@
 import { domain, text } from "./domain.mjs";
+import { analyzeContactRows } from "./contacts.mjs";
 export const IMPORT_FIELDS = [
   "site",
   "country",
@@ -13,6 +14,7 @@ export const IMPORT_FIELDS = [
   "type",
 ];
 const patterns = [
+  ["contact_url", /contact.*(?:page|url|link|form)|submission.*(?:page|url|link)|write for us|editorial.*(?:page|url|link)/],
   ["site", /^(website|site|domain|url)s?( url)?$|website address/],
   ["country", /country|geography|location/],
   ["da", /^(da|domain authority)$/],
@@ -27,8 +29,9 @@ const patterns = [
   ["tat", /^tat$|turnaround|turn around|delivery time/],
   ["link_type", /^links?$|link type|dofollow|nofollow/],
   ["type", /niche|category|site type/],
-  ["email", /e ?mail/],
+  ["email", /e ?mail|gmail/],
   ["whatsapp", /whats ?app/],
+  ["phone", /phone|mobile|telephone|cell|contact (?:no|number)|^contact$|^tel$|فون|موبائل/],
   ["telegram", /telegram/],
   ["admin_name", /owner|contact name|admin name|publisher name/],
 ];
@@ -36,7 +39,7 @@ export function headerField(value) {
   const s = text(value)
     .toLowerCase()
     .replace(/[_\-]/g, " ")
-    .replace(/[^a-z0-9 ]/g, "")
+    .replace(/[^a-z0-9 \u0600-\u06ff]/g, "")
     .trim();
   return patterns.find(([, p]) => p.test(s))?.[0] || "";
 }
@@ -55,7 +58,7 @@ export function detectHeader(rows) {
   });
   return best;
 }
-export function parseCSV(input) {
+export function parseCSV(input, delimiter = ",") {
   const rows = [];
   let row = [],
     cell = "",
@@ -69,7 +72,7 @@ export function parseCSV(input) {
         i++;
       } else if (quoted || cell === "") quoted = !quoted;
       else cell += c;
-    } else if (c === "," && !quoted) {
+    } else if (c === delimiter && !quoted) {
       row.push(cell);
       cell = "";
     } else if ((c === "\n" || c === "\r") && !quoted) {
@@ -89,8 +92,8 @@ export function scanSheet(raw, source_file, sheet_name, override = null) {
   const header = override ?? detectHeader(raw),
     mapping = header >= 0 ? raw[header].map(headerField) : [],
     rows = [],
-    contacts = [],
     privateFields = [];
+  const { contacts, unassigned } = analyzeContactRows(raw, source_file, sheet_name, header, mapping);
   let invalid = 0;
   if (header >= 0) {
     for (const values of raw.slice(header + 1)) {
@@ -109,18 +112,6 @@ export function scanSheet(raw, source_file, sheet_name, override = null) {
         source_file,
         sheet_name,
       });
-      const contact = {
-        domain: d,
-        ...Object.fromEntries(
-          ["email", "whatsapp", "telegram", "admin_name"]
-            .filter((k) => all[k])
-            .map((k) => [k, all[k]]),
-        ),
-      };
-      if (
-        ["email", "whatsapp", "telegram", "admin_name"].some((k) => contact[k])
-      )
-        contacts.push(contact);
     }
   }
   for (const row of raw.slice(
@@ -139,6 +130,13 @@ export function scanSheet(raw, source_file, sheet_name, override = null) {
         field_value: value.slice(0, 2000),
       });
   }
+  for (const record of unassigned.filter((r) => r.row > header + 1)) {
+    privateFields.push({ source_file, sheet_name,
+      field_name: `Unassigned contact candidates (row ${record.row})`,
+      field_value: ["email", "phone", "whatsapp", "telegram", "contact_url"]
+        .filter((k) => record[k]).map((k) => `${k}: ${record[k]}`).join(" | ").slice(0, 2000),
+    });
+  }
   return {
     source_file,
     sheet_name,
@@ -146,6 +144,7 @@ export function scanSheet(raw, source_file, sheet_name, override = null) {
     mapping,
     rows,
     contacts,
+    unassigned,
     privateFields,
     invalid,
   };

@@ -93,6 +93,18 @@ Old `?page=Search Websites` and other Streamlit page aliases resolve to the corr
 - Initial SQL photo migration uses short statements to respect D1's 100 KB statement limit. New photo uploads are limited to 500 KB; existing migration photos support 1 MB each.
 - Free-tier quotas are not bypassed. Caching, cursor exports, limited import batches and a small index set reduce database/CPU use. Check the Cloudflare usage dashboard before unusually large imports.
 
+## Private Contact Analyzer
+
+After administrator sign-in, open **More tools → Contact Analyzer** (`/app/contact-analyzer` on the main website). Upload XLSX/CSV/TSV, paste copied Google Sheets cells, or analyze private notes retained from previous imports. Analysis of uploaded cells runs in the browser without a paid contact API. Review candidates and choose **Save contacts privately** to merge them into the private database.
+
+- Detects email/Gmail, Phone/Mobile/Contact Number columns, WhatsApp links, contact-page links, multiple email columns, rich text, hyperlink targets and cached Excel formula results. Unknown metric and price values are not guessed as phone numbers. Leading zeros are preserved when present in the source; zeros already lost in a numeric spreadsheet cell cannot be recovered reliably.
+- Sheet-level supplier notes remain separate from publisher contacts. Contacts without a clear website are offered for manual assignment, never silently attached to every publisher.
+- Clicking a website after sign-in shows its private publisher contact details and contacts found in its saved supplier/sheet notes. Public search and export endpoints do not include these details.
+- Merge imports keep existing emails, phone numbers, notes, status and quoted prices. Contact detection checks syntax only; it does not establish ownership or email deliverability.
+- Earlier importers may have discarded unrecognized cells. **Analyze saved notes** can recover only retained notes and review records; upload the original sheet to analyze discarded columns.
+
+Deployment applies migration `0002_private_contact_fields.sql` before publishing. It adds phone and contact-page columns without replacing existing records; private backups include them. Public search is cached for five minutes and filter/statistics summaries for fifteen minutes; admin requests bypass those caches to reflect edits. This reduces repeated reads but does not remove Cloudflare account limits.
+
 ## Optional Ahrefs
 
 Only if you already have API access:

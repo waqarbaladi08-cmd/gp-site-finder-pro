@@ -17,6 +17,7 @@ import {
   headerField,
   IMPORT_FIELDS,
 } from "../shared/import.mjs";
+import { readWorkbook } from "./workbook.mjs";
 import { outreach } from "../shared/outreach.mjs";
 import { BACKUP_TABLES, RESOURCES, domain } from "../shared/domain.mjs";
 import {
@@ -213,43 +214,6 @@ export function OutreachPage({ client = false }) {
     </>
   );
 }
-async function readWorkbook(file) {
-  if (file.size > 20 * 1024 * 1024)
-    throw new Error("Please use a file smaller than 20 MB.");
-  if (/\.csv$/i.test(file.name))
-    return [{ name: "CSV", rows: parseCSV(await file.text()) }];
-  if (!/\.xlsx$/i.test(file.name))
-    throw new Error(
-      "Use an .xlsx or .csv file. Save older .xls files as .xlsx first.",
-    );
-  const { default: ExcelJS } = await import("exceljs"),
-    wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(await file.arrayBuffer());
-  const cellText = (v) =>
-    v == null
-      ? ""
-      : typeof v === "object"
-        ? (v.text ??
-          (v.richText
-            ? v.richText.map((x) => x.text).join("")
-            : (v.result ?? "")))
-        : String(v);
-  return wb.worksheets.map((sheet) => {
-    const rows = [];
-    sheet.eachRow({ includeEmpty: true }, (r) =>
-      rows.push(
-        Array.from({ length: Math.min(sheet.columnCount, 100) }, (_, i) =>
-          cellText(r.getCell(i + 1).value),
-        ),
-      ),
-    );
-    if (rows.length > 50000)
-      throw new Error(
-        "Split sheets with more than 50,000 rows into smaller files.",
-      );
-    return { name: sheet.name, rows };
-  });
-}
 export function ImportPage() {
   const [sheets, setSheets] = useState([]),
     [filename, setFilename] = useState(""),
@@ -287,7 +251,8 @@ export function ImportPage() {
             `${processed.toLocaleString()} / ${total.toLocaleString()} websites processed`,
           );
         }
-        await batchResource("contacts", report.contacts);
+        for (let i = 0; i < report.contacts.length; i += 20)
+          await api("/api/admin/contacts/merge", { method: "POST", body: { rows: report.contacts.slice(i, i + 20) } });
         await batchResource("resellers", report.privateFields);
         await batchResource("structures", [
           {

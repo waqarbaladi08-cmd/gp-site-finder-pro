@@ -22,6 +22,7 @@ import {
 } from "./auth.mjs";
 import { appBase, stripAppBase } from "../shared/routing.mjs";
 import { WEBSITE_ORIGIN, mountedResponse } from "./routing.mjs";
+import { mergeContacts, extractContacts, hasContact } from "../shared/contacts.mjs";
 
 const json = (data, status = 200, headers = {}) =>
   Response.json(data, {
@@ -169,7 +170,7 @@ async function stats(db) {
     recent: result[3].results,
   };
 }
-async function cachePublic(request, ctx, loader, seconds = 60) {
+async function cachePublic(request, ctx, loader, seconds = 300) {
   // Admin refreshes and imported data bypass short public caches.
   if (
     request.headers.get("Cookie")?.includes("gp_session=") ||
@@ -292,9 +293,9 @@ async function route(request, env, ctx, additionalOrigin) {
     return json({ rows, next: rows.length === 250 ? rows.at(-1).id : null });
   }
   if (p === "/api/options" && m === "GET")
-    return cachePublic(request, ctx, () => options(db), 120);
+    return cachePublic(request, ctx, () => options(db), 900);
   if (p === "/api/stats" && m === "GET")
-    return cachePublic(request, ctx, () => stats(db), 120);
+    return cachePublic(request, ctx, () => stats(db), 900);
   if (p === "/api/profile" && m === "GET") {
     const r = await db
       .prepare("SELECT value FROM settings WHERE key='profile'")
@@ -358,6 +359,42 @@ async function route(request, env, ctx, additionalOrigin) {
       });
     if (p === "/api/admin/sites" && m === "GET")
       return json(await sites(db, url.searchParams, true));
+    if (p === "/api/admin/contacts/detail" && m === "GET") {
+      const d = domain(url.searchParams.get("domain"));
+      if (!d) fail("Enter a valid website domain.");
+      const contact = await db.prepare("SELECT * FROM contacts WHERE domain=?").bind(d).first();
+      const notes = await db.prepare(`SELECT DISTINCT r.id,r.source_file,r.sheet_name,r.field_name,r.field_value
+        FROM sites s JOIN reseller_private r ON r.source_file=s.source_file AND (COALESCE(r.sheet_name,'')='' OR r.sheet_name=s.sheet_name)
+        WHERE s.domain=? ORDER BY r.id LIMIT 100`).bind(d).all();
+      const suppliers = notes.results.map((r) => ({ source_file: r.source_file, sheet_name: r.sheet_name,
+        ...extractContacts([r.field_name + ": " + r.field_value]) })).filter(hasContact);
+      return json({ domain: d, contact, suppliers });
+    }
+    if (p === "/api/admin/contacts/merge" && m === "POST") {
+      const b = await body(request, 300000);
+      if (!Array.isArray(b.rows) || !b.rows.length || b.rows.length > 20)
+        fail("Send 1–20 contact records per batch.");
+      const grouped = new Map();
+      for (const input of b.rows) {
+        if (!input || typeof input !== "object" || Array.isArray(input)) fail("Invalid contact record.");
+        const row = resourceRow(RESOURCES.contacts, input);
+        grouped.set(row.domain, mergeContacts(grouped.get(row.domain), row));
+      }
+      const records = [...grouped.values()];
+      const existing = await db.batch(records.map((r) => db.prepare("SELECT * FROM contacts WHERE domain=?").bind(r.domain)));
+      const statements = records.map((r, i) => insert(db, "contacts", resourceRow(RESOURCES.contacts,
+        mergeContacts(existing[i].results[0], r)), { replace: true, pk: ["domain"] }));
+      await db.batch([...statements, bump(db)]);
+      return json({ saved: records.length });
+    }
+    if (p === "/api/admin/contacts/sources" && m === "GET") {
+      const table = url.searchParams.get("table") || "reseller_private";
+      if (!["reseller_private", "import_review"].includes(table)) fail("Unknown contact source.");
+      const after = integer(url.searchParams.get("after"));
+      const result = await db.prepare(`SELECT * FROM ${table} WHERE id>? ORDER BY id LIMIT 101`).bind(after).all();
+      const rows = result.results.slice(0, 100);
+      return json({ rows, next: result.results.length > 100 ? rows.at(-1).id : null });
+    }
     if (p === "/api/admin/legacyfavorites" && m === "GET")
       return json(
         (
@@ -767,7 +804,7 @@ export default {
       return json(
         {
           error:
-            "The request could not be completed. Please retry. If the free daily quota is exhausted, it resets at midnight UTC.",
+            "Workspace storage is temporarily unavailable. Please retry shortly.",
         },
         503,
       );

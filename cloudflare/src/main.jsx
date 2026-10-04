@@ -55,6 +55,7 @@ const ResourcePage = modulePage(
   SettingsPage = modulePage(() => import("./resources.jsx"), "SettingsPage"),
   LoginPage = modulePage(() => import("./resources.jsx"), "LoginPage");
 const OutreachPage = modulePage(() => import("./tools.jsx"), "OutreachPage"),
+  ContactAnalyzer = modulePage(() => import("./contact-analyzer.jsx"), "ContactAnalyzer"),
   ImportPage = modulePage(() => import("./tools.jsx"), "ImportPage"),
   ExportPage = modulePage(() => import("./tools.jsx"), "ExportPage"),
   BackupPage = modulePage(() => import("./tools.jsx"), "BackupPage"),
@@ -86,6 +87,7 @@ const groups = [
       ["import", "Import Excel", Upload],
       ["pipeline", "Outreach pipeline", Mail],
       ["contacts", "Private contacts", Contact],
+      ["contact-analyzer", "Contact Analyzer", FileSpreadsheet],
       ["resellers", "Reseller details", BriefcaseBusiness],
       ["pricing", "Price manager", FileSpreadsheet],
       ["duplicates", "Duplicate finder", CopyCheck],
@@ -320,6 +322,7 @@ function Page({ page }) {
   };
   if (publicPages[page]) return publicPages[page];
   const adminPages = {
+    "contact-analyzer": <ContactAnalyzer />,
     import: <ImportPage />,
     backup: <BackupPage />,
     duplicates: <DuplicatesPage />,
@@ -514,7 +517,7 @@ function App() {
             {groups.map(([name, links]) => (
               <div key={name} className="nav-group">
                 <p className="nav-label">{name}</p>
-                {links.map(nav)}
+                {links.filter(([p]) => user || !["contacts", "contact-analyzer", "resellers", "vault"].includes(p)).map(nav)}
               </div>
             ))}
           </details>

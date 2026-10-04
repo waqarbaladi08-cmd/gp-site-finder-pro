@@ -114,7 +114,7 @@ export function PhotoField({ value, onChange }) {
 export function ResourcePage({ name }) {
   const r = RESOURCES[name],
     info = RESOURCE_INFO[name],
-    { refresh, notify } = useApp(),
+    { refresh, notify, go } = useApp(),
     { busy, run } = useTask();
   const [q, setQ] = useState(""),
     [search, setSearch] = useState(""),
@@ -162,7 +162,7 @@ export function ResourcePage({ name }) {
           k,
         ),
     )
-    .slice(0, name === "pipeline" ? 7 : 5);
+      .slice(0, name === "pipeline" || name === "contacts" ? 7 : 5);
   return (
     <>
       <Heading
@@ -187,6 +187,7 @@ export function ResourcePage({ name }) {
       >
         {info[1]}
       </Heading>
+      {name === "contacts" && <div className="form-actions"><button className="primary" onClick={() => go("contact-analyzer")}>Analyze sheet contacts</button></div>}
       <form
         className="search-row panel compact"
         onSubmit={(e) => {

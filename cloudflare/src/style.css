@@ -1543,3 +1543,12 @@ footer {
     animation: none;
   }
 }
+/* Private contact tools reuse the workspace surfaces and spacing. */
+.contact-analyzer-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.contact-analyzer-inputs .upload-zone { margin: 0 0 20px; }
+.contact-details { border: 1px solid #d6e3e9; border-radius: 12px; padding: 20px; margin-bottom: 20px; background: #f5fafc; }
+.contact-details h2 { display: flex; align-items: center; gap: 8px; font-size: 18px; margin-top: 0; }
+.contact-details dd { overflow-wrap: anywhere; white-space: pre-line; }
+.contact-assignment { padding: 14px 0; border-bottom: 1px solid #e2e8f0; }
+.contact-assignment p { overflow-wrap: anywhere; }
+@media (max-width: 720px) { .contact-analyzer-inputs { grid-template-columns: 1fr; } }

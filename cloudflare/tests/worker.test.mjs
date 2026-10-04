@@ -1,6 +1,6 @@
 import { before, after, test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { createHash, pbkdf2Sync } from "node:crypto";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
@@ -72,7 +72,7 @@ before(async () => {
     }),
   );
   db = await mf.getD1Database("DB", "test-worker");
-  const sql = await readFile("migrations/0001_initial.sql", "utf8");
+  const sql = (await Promise.all((await readdir("migrations")).filter((f) => f.endsWith(".sql")).sort().map((f) => readFile("migrations/" + f, "utf8")))).join("\n");
   await db.batch(
     sql
       .split(";")
@@ -441,6 +441,37 @@ test("backups reject unknown tables and restore records without public exposure"
     400,
   );
 });
+test("private contact analyzer merges phones and emails, preserves manual fields and never exposes contacts publicly", async () => {
+  const route = "/api/admin/contacts/merge";
+  const sample = { domain: "manual.example.com", email: "sheet-private@example.com", phone: "+12025550143", contact_url: "https://manual.example.com/contact", notes: "Sheet: test.xlsx / Publishers / row 2" };
+  assert.equal((await call(route, { method: "POST", data: { rows: [sample] } })).status, 401);
+  assert.equal((await call("/api/admin/contacts/detail?domain=manual.example.com")).status, 401);
+  assert.equal((await call("/api/admin/contacts/sources")).status, 401);
+  assert.equal((await call(route, { method: "POST", auth: true, origin: "https://foreign.example", data: { rows: [sample] } })).status, 403);
+  await call("/api/admin/resources/contacts", { method: "PUT", auth: true, data: { domain: sample.domain, email: "kept-private@example.com", status: "Replied", notes: "Manual note", quoted_price: "80" } });
+  for (let i = 0; i < 2; i++) assert.equal((await call(route, { method: "POST", auth: true, data: { rows: [sample, sample] } })).status, 200);
+  await call("/api/admin/resource-batch", { method: "POST", auth: true, data: { resource: "resellers", rows: [{ source_file: "supplier.xlsx", sheet_name: "Tech", field_name: "Phone", field_value: "+44 7700 900123; supplier-private@gmail.com" }] } });
+  const detail = await call("/app/api/admin/contacts/detail?domain=manual.example.com", { auth: true });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.response.headers.get("Cache-Control"), "no-store");
+  assert.equal(detail.body.contact.email, "kept-private@example.com; sheet-private@example.com");
+  assert.equal(detail.body.contact.phone, sample.phone);
+  assert.equal(detail.body.contact.status, "Replied");
+  assert.equal(detail.body.contact.quoted_price, "80");
+  assert.equal(detail.body.contact.notes, "Manual note\n" + sample.notes);
+  const supplier = detail.body.suppliers.find((r) => r.email === "supplier-private@gmail.com");
+  assert.equal(supplier.phone, "+447700900123");
+  for (const path of ["/api/sites?q=manual", "/api/export?q=manual", "/api/stats", "/api/options"]) {
+    const pub = await call(path);
+    assert.equal(pub.status, 200);
+    assert.doesNotMatch(JSON.stringify(pub.body), /sheet-private|kept-private|supplier-private|12025550143|447700900123/);
+  }
+  const backup = await call("/api/admin/backup?table=contacts", { auth: true });
+  assert.equal(backup.body.rows.find((r) => r.domain === sample.domain).phone, sample.phone);
+  assert.equal((await call(route, { method: "POST", auth: true, data: { rows: [{ domain: "not a domain", phone: "123" }] } })).status, 400);
+  assert.equal((await call("/api/admin/contacts/sources?table=auth_users", { auth: true })).status, 400);
+});
+
 test("sign-out revokes the existing server session", async () => {
   assert.equal(
     (await call("/api/auth/me", { auth: true })).body.user.username,

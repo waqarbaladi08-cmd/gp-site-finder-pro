@@ -1,7 +1,7 @@
 // Portable local preview using the same workerd runtime and built frontend.
 // Useful in containers where Wrangler's network-interface discovery is unavailable.
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
@@ -26,14 +26,13 @@ const mf = new Miniflare(
   }),
 );
 const db = await mf.getD1Database("DB");
-const schema = await readFile("migrations/0001_initial.sql", "utf8");
-await db.batch(
-  schema
-    .split(";")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => db.prepare(s)),
-);
+await db.prepare("CREATE TABLE IF NOT EXISTS local_preview_migrations(name TEXT PRIMARY KEY)").run();
+for (const name of (await readdir("migrations")).filter((f) => f.endsWith(".sql")).sort()) {
+  if (await db.prepare("SELECT name FROM local_preview_migrations WHERE name=?").bind(name).first()) continue;
+  const schema = await readFile("migrations/" + name, "utf8");
+  await db.batch([...schema.split(";").map((s) => s.trim()).filter(Boolean).map((s) => db.prepare(s)),
+    db.prepare("INSERT INTO local_preview_migrations VALUES(?)").bind(name)]);
+}
 if (!(await db.prepare("SELECT COUNT(*) AS total FROM sites").first()).total) {
   try {
     const data = JSON.parse(
