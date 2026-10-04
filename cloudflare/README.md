@@ -24,7 +24,7 @@ Requires Node.js 22.12+ (Node 24 tested), Python 3.10+, a Cloudflare account and
 
 The setup script runs tests, creates/binds D1, applies the schema, migrates records/photos, verifies the source count and deploys. `wrangler.jsonc` receives the real database ID. Authentication, private SQL and backup files stay out of Git. Setup is resumable with the same backup. A different backup after initialization requires explicit review rather than silently replacing live data.
 
-For subsequent code updates, run `npm ci && npm run check && npm run deploy`. Schema changes must use a new migration followed by `npm run db:remote`. Keep the existing `wrangler.jsonc` database ID.
+For subsequent code updates, run `npm ci && npm run check && npm run deploy`. Schema changes must use a new migration followed by `npm run db:remote` **before** deploying code that requires it. Keep the existing `wrangler.jsonc` database ID.
 
 ## Cloudflare dashboard / GitHub deployment
 
@@ -41,9 +41,11 @@ Use these settings when connecting this repository to Workers Builds:
 | Deploy command | `npm run deploy:ci` |
 | Node version | `24` (set by `.nvmrc`) |
 
-The deploy command applies pending schema migrations before publishing. It does not delete records, import a repository snapshot, or create a default admin. The build credential must allow D1 writes as well as Worker deployment. Cloudflare's automatically generated Workers Builds token does not include D1 permission by default, so add **Account: D1: Edit** to the build token in **My Profile > API Tokens**, or select an owner-created token with that permission before running this deploy command. Limit access to the account that owns this Worker and database. Keep the token in Cloudflare; do not paste it into chat or commit it to Git.
+`npm run deploy:ci` publishes the Worker and built frontend without querying D1. Use it for code updates when the required schema is already applied. The existing production schema includes `0002_private_contact_fields.sql`; the automatic sheet detection update does not require a new migration. This lets code updates publish even when D1's daily query quota is exhausted. It does not restore database access: queries remain unavailable until the quota resets at 00:00 UTC (05:00 Pakistan time).
 
-This creates the application and empty database tables. A fresh Streamlit backup and a new admin account are still required before cutover. Run the setup procedure above to migrate the fresh backup and create the admin. Keep existing app links until the new site's records and admin access have been verified.
+For a **first deployment or any schema-changing release**, apply migrations successfully before publishing code that depends on them: run `npm run db:remote`, or use `npm run deploy:ci:migrate` as the dashboard deploy command for that release. The latter stops deployment if migration fails. Migration credentials must allow **Account: D1: Edit** in addition to Worker deployment; Cloudflare's generated build token may need that permission. Limit access to the account that owns this Worker and database. Keep the token in Cloudflare; do not paste it into chat or commit it to Git.
+
+Neither deploy command deletes records, imports a repository snapshot, or creates a default admin. For a fresh installation, run the setup procedure above to create the schema, migrate a current Streamlit backup and create the admin. Keep existing app links until the new site's records and admin access have been verified.
 
 ## Local preview
 
@@ -104,7 +106,7 @@ After administrator sign-in, open **More tools → Contact Analyzer** (`/app/con
 - Merge imports keep existing emails, phone numbers, notes, status and quoted prices. Contact detection checks syntax only; it does not establish ownership or email deliverability.
 - Earlier importers may have discarded unrecognized cells. **Analyze saved notes** can recover only retained notes and review records; upload the original sheet to analyze discarded columns.
 
-Deployment applies migration `0002_private_contact_fields.sql` before publishing. It adds phone and contact-page columns without replacing existing records; private backups include them. Public search is cached for five minutes and filter/statistics summaries for fifteen minutes; admin requests bypass those caches to reflect edits. This reduces repeated reads but does not remove Cloudflare account limits.
+The analyzer requires migration `0002_private_contact_fields.sql`, which is already applied in production. For a fresh installation, apply it with `npm run db:remote` before publishing. It adds phone and contact-page columns without replacing existing records; private backups include them. Public search is cached for five minutes and filter/statistics summaries for fifteen minutes; admin requests bypass those caches to reflect edits. This reduces repeated reads but does not remove Cloudflare account limits.
 
 ## Optional Ahrefs
 
