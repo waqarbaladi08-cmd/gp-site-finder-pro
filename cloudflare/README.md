@@ -74,7 +74,9 @@ Pakistani `03xx` mobile numbers are converted to `92` for WhatsApp; ambiguous lo
 numbers require a country code instead of generating an incorrect chat link.
 
 Imports match contacts to the domain on the same row. Website details also scan
-retained private notes from that exact listing's source file and sheet automatically.
+retained private notes from every workbook containing the domain, without a 100-note
+cutoff. Contacts are grouped by file and tab; the selected sheet is shown first.
+Other workbook tabs are labeled with unconfirmed publisher ownership.
 Shared supplier contacts are labeled separately from publisher contacts. Explicitly
 named website notes are shown only for that domain. Public APIs and exports continue
 to exclude all contact values. Original cells discarded by an older importer require
@@ -121,6 +123,7 @@ After administrator sign-in, open **More tools → Contact Analyzer** (`/app/con
 
 - Detects email/Gmail, Phone/Mobile/Contact Number columns, WhatsApp links, contact-page links, multiple email columns, rich text, hyperlink targets and cached Excel formula results. Unknown metric and price values are not guessed as phone numbers. Leading zeros are preserved when present in the source; zeros already lost in a numeric spreadsheet cell cannot be recovered reliably.
 - Contact-only sheets with Name/Email/Phone/WhatsApp headers are supported. Email and phone totals include contacts without a website and count unique values, so sheet contacts do not misleadingly appear as zero detections.
+- The contact preview and private CSV retain a separate entry for each source sheet, even when the same domain occurs in several tabs. A per-sheet summary includes worksheets with zero detections; saving still merges duplicate domains without losing contact values.
 - Sheet-level supplier contacts remain separate from publisher contacts. Contacts without a clear website are saved as private source-sheet records and included in the contact preview/export. Manual website assignment is optional; they are never silently attached as publisher contacts. Repeated saves deduplicate identical source-sheet notes, and existing saved notes are reused.
 - Clicking a website after sign-in shows its private publisher contact details and contacts found in its saved supplier/sheet notes. Public search and export endpoints do not include these details.
 - Merge imports keep existing emails, phone numbers, notes, status and quoted prices. Contact detection checks syntax only; it does not establish ownership or email deliverability.

@@ -22,8 +22,8 @@ import {
 } from "./auth.mjs";
 import { appBase, stripAppBase } from "../shared/routing.mjs";
 import { WEBSITE_ORIGIN, mountedResponse } from "./routing.mjs";
-import { mergeContacts, extractContacts, hasContact, hydrateContact, storeContact } from "../shared/contacts.mjs";
-import { headerField } from "../shared/import.mjs";
+import { mergeContacts, hasContact, hydrateContact, storeContact } from "../shared/contacts.mjs";
+import { savedSourceContact } from "../shared/contact-sources.mjs";
 
 const json = (data, status = 200, headers = {}) =>
   Response.json(data, {
@@ -371,22 +371,32 @@ async function route(request, env, ctx, additionalOrigin) {
       if (siteID && !listing) fail("Website listing not found.", 404);
       const saved = await db.prepare("SELECT * FROM contacts WHERE domain=?").bind(d).first();
       let contact = saved ? hydrateContact(saved) : null;
-      const notes = listing?.source_file ? await db.prepare(`SELECT id,source_file,sheet_name,field_name,field_value
-        FROM reseller_private WHERE source_file=? AND (COALESCE(sheet_name,'')='' OR sheet_name=?)
-        ORDER BY id LIMIT 100`).bind(listing.source_file, listing.sheet_name || "").all() : { results: [] };
+      const matches = await db.prepare("SELECT DISTINCT source_file,sheet_name FROM sites WHERE domain=? AND source_file<>''").bind(d).all();
+      const notes = matches.results.length ? await db.prepare(`SELECT id,source_file,sheet_name,field_name,field_value
+        FROM reseller_private WHERE source_file IN (SELECT DISTINCT source_file FROM sites WHERE domain=? AND source_file<>'')
+        ORDER BY source_file,sheet_name,id`).bind(d).all() : { results: [] };
+      const sheetKey = (file, sheet) => JSON.stringify([file, text(sheet).toLowerCase()]);
+      const matchingSheets = new Set(matches.results.map((r) => sheetKey(r.source_file, r.sheet_name)));
+      const selectedSheet = listing && sheetKey(listing.source_file, listing.sheet_name);
       const sources = new Map();
       for (const r of notes.results) {
-        const found = extractContacts([r.field_name + ": " + r.field_value], [headerField(r.field_name)]);
+        const found = savedSourceContact(r);
         if (!hasContact(found)) continue;
-        const assigned = domain(text(r.field_value).match(/(?:^|[|\n])\s*(?:website|site|domain|url)\s*:\s*(\S+)/i)?.[1]);
-        if (assigned) {
-          if (assigned === d) contact = mergeContacts(contact || {}, { ...found, domain: d });
+        if (found.domain) {
+          if (found.domain === d) contact = mergeContacts(contact || {}, found);
           continue;
         }
-        const key = JSON.stringify([r.source_file, r.sheet_name || ""]);
-        sources.set(key, mergeContacts(sources.get(key), { ...found, source_file: r.source_file, sheet_name: r.sheet_name }));
+        const key = sheetKey(r.source_file, r.sheet_name);
+        const scope = key === selectedSheet ? "selected_sheet" : matchingSheets.has(key) ? "matching_sheet"
+          : !text(r.sheet_name) ? "shared_workbook" : "other_workbook_tab";
+        // Keep workbook contacts separate; never turn them into publisher contacts.
+        const { notes: provenance, ...channels } = found;
+        sources.set(key, { ...mergeContacts(sources.get(key), channels), scope });
       }
-      return json({ domain: d, country: listing?.country || "", contact, suppliers: [...sources.values()] });
+      const priority = { selected_sheet: 0, matching_sheet: 1, shared_workbook: 2, other_workbook_tab: 3 };
+      const suppliers = [...sources.values()].sort((a, b) => priority[a.scope] - priority[b.scope]);
+      return json({ domain: d, country: listing?.country || "", contact, suppliers,
+        matched_sheets: matches.results });
     }
     if (p === "/api/admin/contacts/merge" && m === "POST") {
       const b = await body(request, 300000);

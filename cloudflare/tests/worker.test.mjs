@@ -518,7 +518,7 @@ test("social contacts persist privately through merge, ordinary edits and backup
     assert.doesNotMatch(JSON.stringify((await call(path)).body), /updated-private|private.editor|private-editor|03001234567/);
 });
 
-test("opening a website detects saved sheet contacts automatically and scopes them to the selected source listing", async () => {
+test("opening a website includes all matching files and workbook tabs while keeping unrelated publisher rows out", async () => {
   const ids = [];
   for (const [source_file, sheet_name] of [["source-a.xlsx", "Alpha"], ["source-b.xlsx", "Beta"]]) {
     const r = prepareSite({ site: "scoped.example.com", source_file, sheet_name });
@@ -531,29 +531,64 @@ test("opening a website detects saved sheet contacts automatically and scopes th
     { source_file: "source-a.xlsx", sheet_name: "Alpha", field_name: "Retained website row", field_value: "Website: scoped.example.com | Email: row-private@example.com | LinkedIn: https://linkedin.com/in/scoped-private" },
     { source_file: "source-a.xlsx", sheet_name: "Alpha", field_name: "Another website row", field_value: "Website: unrelated.example.com | Email: unrelated-private@example.com | WhatsApp: +447700900123" },
     { source_file: "source-b.xlsx", sheet_name: "Beta", field_name: "WhatsApp", field_value: "+12025550143 | beta-private@gmail.com | https://linkedin.com/in/beta-private" },
+    { source_file: "source-a.xlsx", sheet_name: "Contact directory", field_name: "Retained website row", field_value: "Website link: scoped.example.com | Email: directory-private@example.com" },
+    { source_file: "source-a.xlsx", sheet_name: "More contacts", field_name: "Phone", field_value: "03011234567 | workbook-private@gmail.com" },
+    { source_file: "unrelated-source.xlsx", sheet_name: "Alpha", field_name: "Phone", field_value: "03021234567 | other-workbook-private@gmail.com" },
   ];
   assert.equal((await call("/api/admin/resource-batch", { method: "POST", auth: true, data: { resource: "resellers", rows: notes } })).status, 200);
   const path = "/api/admin/contacts/detail?domain=scoped.example.com&site_id=";
   assert.equal((await call(path + ids[0])).status, 401);
   const a = await call(path + ids[0], { auth: true });
   assert.equal(a.status, 200);
-  assert.equal(a.body.suppliers.length, 1);
+  assert.equal(a.body.suppliers.length, 3);
   assert.equal(a.body.suppliers[0].source_file, "source-a.xlsx");
   assert.equal(a.body.suppliers[0].email, "alpha-private@gmail.com");
   assert.equal(a.body.suppliers[0].phone, "03001234567");
   assert.equal(a.body.suppliers[0].facebook, "https://facebook.com/alpha.private");
-  assert.equal(a.body.contact.email, "row-private@example.com");
+  assert.equal(a.body.suppliers[0].scope, "selected_sheet");
+  assert.equal(a.body.suppliers.find((r) => r.sheet_name === "Beta").scope, "matching_sheet");
+  const otherTab = a.body.suppliers.find((r) => r.sheet_name === "More contacts");
+  assert.equal(otherTab.scope, "other_workbook_tab");
+  assert.equal(otherTab.phone, "03011234567");
+  assert.equal(a.body.contact.email, "row-private@example.com; directory-private@example.com");
   assert.equal(a.body.contact.linkedin, "https://linkedin.com/in/scoped-private");
-  assert.doesNotMatch(JSON.stringify(a.body), /beta-private|unrelated-private/);
+  assert.doesNotMatch(JSON.stringify(a.body), /unrelated-private|other-workbook-private/);
   const b = await call(path + ids[1], { auth: true });
   assert.equal(b.body.suppliers[0].email, "beta-private@gmail.com");
   assert.equal(b.body.suppliers[0].whatsapp, "+12025550143");
-  assert.equal(b.body.contact, null);
-  assert.doesNotMatch(JSON.stringify(b.body), /alpha-private|row-private|unrelated-private/);
+  assert.equal(b.body.suppliers[0].scope, "selected_sheet");
+  assert.equal(b.body.contact.email, a.body.contact.email);
+  assert.equal(b.body.suppliers.find((r) => r.sheet_name === "Alpha").scope, "matching_sheet");
+  assert.doesNotMatch(JSON.stringify(b.body), /unrelated-private|other-workbook-private/);
+  assert.equal(b.body.matched_sheets.length, 2);
   assert.equal((await call("/api/admin/contacts/detail?domain=wrong.example.com&site_id=" + ids[0], { auth: true })).status, 404);
   assert.equal(a.response.headers.get("Cache-Control"), "no-store");
   for (const p of ["/api/sites?q=scoped", "/api/export?q=scoped", "/api/stats", "/api/options"])
-    assert.doesNotMatch(JSON.stringify((await call(p)).body), /alpha-private|beta-private|row-private|facebook.com|linkedin.com/);
+    assert.doesNotMatch(JSON.stringify((await call(p)).body), /alpha-private|beta-private|row-private|directory-private|workbook-private|facebook.com|linkedin.com/);
+});
+
+test("saved contacts after the first hundred notes and differently spaced tab names remain visible", async () => {
+  const site = prepareSite({ site: "footer.example.com", source_file: "footer.xlsx", sheet_name: "Publishers" });
+  const cols = Object.keys(site);
+  const result = await db.prepare(`INSERT INTO sites(${cols.join(",")}) VALUES(${cols.map(() => "?")})`).bind(...cols.map((k) => site[k])).run();
+  const notes = Array.from({ length: 120 }, (_, i) => db.prepare("INSERT INTO reseller_private(source_file,sheet_name,field_name,field_value,updated_at) VALUES(?,?,?,?,datetime('now'))")
+    .bind("footer.xlsx", "Publishers", "Sheet note", `No contacts in note ${i}`));
+  notes.push(db.prepare("INSERT INTO reseller_private(source_file,sheet_name,field_name,field_value,updated_at) VALUES(?,?,?,?,datetime('now'))")
+    .bind("footer.xlsx", "Publishers", "WhatsApp", "03031234567 | footer-private@gmail.com"));
+  notes.push(db.prepare("INSERT INTO reseller_private(source_file,sheet_name,field_name,field_value,updated_at) VALUES(?,?,?,?,datetime('now'))")
+    .bind("footer.xlsx", " publishers ", "Phone", "03041234567"));
+  await db.batch(notes);
+  const path = `/api/admin/contacts/detail?domain=footer.example.com&site_id=${result.meta.last_row_id}`;
+  assert.equal((await call(path)).status, 401);
+  const detail = await call(path, { auth: true });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.suppliers.length, 1);
+  assert.equal(detail.body.suppliers[0].scope, "selected_sheet");
+  assert.equal(detail.body.suppliers[0].email, "footer-private@gmail.com");
+  assert.equal(detail.body.suppliers[0].whatsapp, "03031234567");
+  assert.equal(detail.body.suppliers[0].phone, "03041234567");
+  assert.equal(detail.body.contact, null);
+  assert.doesNotMatch(JSON.stringify((await call("/api/sites?q=footer")).body), /footer-private|03031234567|03041234567/);
 });
 
 test("sign-out revokes the existing server session", async () => {

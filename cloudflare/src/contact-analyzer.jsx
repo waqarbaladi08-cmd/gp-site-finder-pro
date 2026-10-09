@@ -1,8 +1,9 @@
 import React, { useState } from "react";
 import { UploadCloud, LockKeyhole, Download, Search } from "lucide-react";
-import { scanSheet, parseCSV, headerField } from "../shared/import.mjs";
+import { scanSheet, parseCSV } from "../shared/import.mjs";
 import { domain, toCSV } from "../shared/domain.mjs";
-import { analyzeContactRows, CONTACT_FIELDS, extractContacts, hasContact, contactSummary, sheetContactNote } from "../shared/contacts.mjs";
+import { CONTACT_FIELDS, hasContact, contactSummary, sheetContactNote } from "../shared/contacts.mjs";
+import { contactPreviewRows, contactSourceSummaries, savedSourceContact } from "../shared/contact-sources.mjs";
 import { ContactLinks } from "./contact-links.jsx";
 import { readWorkbook } from "./workbook.mjs";
 import { useApp, useTask, api, Heading, Notice, Field, download, label } from "./lib.jsx";
@@ -15,7 +16,8 @@ export function ContactAnalyzer() {
   const [assignments, setAssignments] = useState({});
   const { busy, run } = useTask(), { refresh, notify, go } = useApp();
   const { contacts, unassigned, all, emails, phones, links } = contactSummary(reports);
-  const filtered = all.filter((r) => [r.domain, ...CONTACT_FIELDS.map((key) => r[key]), r.source_file, r.sheet_name].join(" ").toLowerCase().includes(query.toLowerCase()));
+  const sourceRows = contactPreviewRows(reports), sourceSummaries = contactSourceSummaries(reports);
+  const filtered = sourceRows.filter((r) => [r.domain, ...CONTACT_FIELDS.map((key) => r[key]), r.source_file, r.sheet_name].join(" ").toLowerCase().includes(query.toLowerCase()));
   const displayPage = Math.min(page, Math.max(1, Math.ceil(filtered.length / 25)));
   const rows = filtered.slice((displayPage - 1) * 25, displayPage * 25);
   function showSheets(sheets, name) {
@@ -61,18 +63,9 @@ export function ContactAnalyzer() {
       do {
         const result = await api("/api/admin/contacts/sources?" + new URLSearchParams({ table, after }));
         for (const row of result.rows) {
-          let values = [row.field_value || row.raw_record || ""], fields = [];
-          try {
-            const obj = JSON.parse(row.raw_record || "null");
-            if (obj && typeof obj === "object" && !Array.isArray(obj)) { values = Object.values(obj); fields = Object.keys(obj).map(headerField); }
-          } catch { /* Free-form saved note. */ }
-          const found = extractContacts(values, fields);
-          if (!hasContact(found)) continue;
-          const detected = analyzeContactRows([values], row.source_file || "Saved notes", row.sheet_name || "", -1);
-          const d = domain(row.site) || detected.contacts[0]?.domain || "";
-          const candidate = { ...found, domain: d, source_file: row.source_file || "Saved notes", sheet_name: row.sheet_name || "",
-            persisted: table === "reseller_private", notes: `Saved sheet note: ${row.source_file || ""} / ${row.sheet_name || ""} / ${table} ${row.id}` };
-          scanned.push({ sheet_name: `${table} ${row.id}`, contacts: d ? [candidate] : [], unassigned: d ? [] : [candidate] });
+          const candidate = savedSourceContact(row, table);
+          if (!hasContact(candidate)) continue;
+          scanned.push({ contacts: candidate.domain ? [candidate] : [], unassigned: candidate.domain ? [] : [candidate] });
         }
         count += result.rows.length; setProgress(`${count} saved sheet notes analyzed…`); after = result.next;
       } while (after !== null);
@@ -110,6 +103,11 @@ export function ContactAnalyzer() {
         <div className="stat-card"><small>Website matches</small><strong>{contacts.length.toLocaleString()}</strong></div>
         <div className="stat-card"><small>Sheet contacts</small><strong>{unassigned.length.toLocaleString()}</strong></div></div>
       <Notice>{links} social / contact links detected. Click any contact in the table to open it.</Notice>
+      <section className="panel form-panel"><h2>Contacts in every sheet</h2>
+        <div className="table-wrap"><table><thead><tr><th>File / sheet</th><th>Entries</th><th>Website matches</th><th>Emails</th><th>Numbers</th><th>Links</th></tr></thead><tbody>
+          {sourceSummaries.map((r) => <tr key={JSON.stringify([r.source_file, r.sheet_name])}><td>{r.source_file}<br /><strong>{r.sheet_name || "Workbook contact"}</strong></td><td>{r.entries}</td><td>{r.websites}</td><td>{r.emails}</td><td>{r.phones}</td><td>{r.links}</td></tr>)}
+        </tbody></table></div>
+      </section>
       {rawSheets.length > 0 && <details className="panel form-panel"><summary>Review detected headers</summary>{reports.map((r, i) => <div key={i}>
         <h3>{r.sheet_name}</h3><Field label="Header row (0 for no header)" type="number" min="0" max={Math.min(rawSheets[i].rows.length, 100)} disabled={busy || complete} value={r.header_row} onChange={(v) => {
           const h = Number(v); if (!Number.isInteger(h) || h < 0 || h > Math.min(rawSheets[i].rows.length, 100)) return;
@@ -117,9 +115,9 @@ export function ContactAnalyzer() {
         }} /><div className="mapping">{r.mapping.map((f, n) => f && <span className="tag" key={n}>{label(f)}</span>)}</div>
       </div>)}</details>}
       <section className="panel form-panel"><div className="panel-heading flush"><h2>Detected contacts</h2>
-        <button disabled={!all.length || busy} onClick={() => download("private-contact-candidates.csv", toCSV(all, ["domain", ...CONTACT_FIELDS, "source_file", "sheet_name", "notes"]), "text/csv;charset=utf-8")}><Download size={17} /> Export private CSV</button></div>
+        <button disabled={!sourceRows.length || busy} onClick={() => download("private-contact-candidates.csv", toCSV(sourceRows, ["domain", ...CONTACT_FIELDS, "source_file", "sheet_name", "notes"]), "text/csv;charset=utf-8")}><Download size={17} /> Export private CSV</button></div>
         <Field label="Filter contacts" value={query} onChange={(v) => { setQuery(v); setPage(1); }} />
-        <div className="table-wrap"><table><thead><tr><th>Website / source</th>{["email", "phone", "whatsapp", "facebook", "linkedin", "telegram", "contact_url"].map((key) => <th key={key}>{label(key)}</th>)}</tr></thead><tbody>{rows.map((r, i) => <tr key={`${r.domain}-${i}`}><td>{r.domain || <><strong>Sheet contact</strong><br /><small>{r.source_file} · {r.sheet_name}</small></>}</td>{["email", "phone", "whatsapp", "facebook", "linkedin", "telegram", "contact_url"].map((key) => <td key={key}><ContactLinks field={key} value={r[key]} /></td>)}</tr>)}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>Website / source</th>{["email", "phone", "whatsapp", "facebook", "linkedin", "telegram", "contact_url"].map((key) => <th key={key}>{label(key)}</th>)}</tr></thead><tbody>{rows.map((r, i) => <tr key={`${r.domain}-${i}`}><td><strong>{r.domain || "Sheet contact"}</strong><br /><small>{r.source_file} · {r.sheet_name || "Workbook contact"}</small></td>{["email", "phone", "whatsapp", "facebook", "linkedin", "telegram", "contact_url"].map((key) => <td key={key}><ContactLinks field={key} value={r[key]} /></td>)}</tr>)}</tbody></table></div>
         {!rows.length && <p>No matching contacts.</p>}
         <div className="form-actions"><button disabled={displayPage <= 1} onClick={() => setPage(displayPage - 1)}>Previous</button><span>Page {displayPage} of {Math.max(1, Math.ceil(filtered.length / 25))}</span><button disabled={displayPage * 25 >= filtered.length} onClick={() => setPage(displayPage + 1)}>Next</button></div>
       </section>
