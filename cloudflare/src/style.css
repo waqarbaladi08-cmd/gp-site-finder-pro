@@ -1551,4 +1551,8 @@ footer {
 .contact-details dd { overflow-wrap: anywhere; white-space: pre-line; }
 .contact-assignment { padding: 14px 0; border-bottom: 1px solid #e2e8f0; }
 .contact-assignment p { overflow-wrap: anywhere; }
+.contact-links { display: grid; gap: 8px; }
+.contact-link { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.contact-link > a:first-child { color: #087767; font-weight: 650; text-decoration: underline; text-underline-offset: 3px; }
+.contact-link .contact-secondary { font-size: 12px; border: 1px solid #d6e3e9; border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
 @media (max-width: 720px) { .contact-analyzer-inputs { grid-template-columns: 1fr; } }

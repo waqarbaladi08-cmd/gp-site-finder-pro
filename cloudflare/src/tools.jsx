@@ -268,7 +268,7 @@ export function ImportPage() {
         ]);
       }
       setProgress(
-        `${inserted.toLocaleString()} websites added. ${(total - inserted).toLocaleString()} existing or previously deleted listings skipped. ${detected.emails} email addresses and ${detected.phones} phone / WhatsApp numbers saved privately.`,
+        `${inserted.toLocaleString()} websites added. ${(total - inserted).toLocaleString()} existing or previously deleted listings skipped. ${detected.emails} emails, ${detected.phones} phone / WhatsApp numbers and ${detected.links} social / contact links saved privately.`,
       );
       setComplete(true);
       refresh();
@@ -277,7 +277,7 @@ export function ImportPage() {
   return (
     <>
       <Heading title="Import Excel / CSV" eyebrow="GROW YOUR DIRECTORY">
-        Email, phone and WhatsApp details are detected automatically on upload and saved privately with the import, even without a website column.
+        Email, phone, WhatsApp, Facebook and LinkedIn contacts are matched to websites automatically and saved for admins with the import.
       </Heading>
       <label className={"upload-zone " + (busy ? "disabled" : "")}>
         <UploadCloud size={36} />
@@ -301,7 +301,7 @@ export function ImportPage() {
               setReports(next);
               const found = contactSummary(next);
               setComplete(false);
-              setProgress(`Automatically detected ${found.emails} email addresses and ${found.phones} phone / WhatsApp numbers. Review the preview, then import to save them privately.`);
+              setProgress(`Automatically detected ${found.emails} emails, ${found.phones} phone / WhatsApp numbers and ${found.links} social / contact links. Review the preview, then import to save them privately.`);
             })
           }
         />

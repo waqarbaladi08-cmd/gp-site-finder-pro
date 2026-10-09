@@ -11,6 +11,7 @@ import {
   KeyRound,
 } from "lucide-react";
 import { RESOURCES, safeWebURL } from "../shared/domain.mjs";
+import { ContactLinks } from "./contact-links.jsx";
 import {
   useApp,
   useData,
@@ -112,7 +113,7 @@ export function PhotoField({ value, onChange }) {
   );
 }
 export function ResourcePage({ name }) {
-  const r = RESOURCES[name],
+  const r = name === "contacts" ? { ...RESOURCES[name], fields: [...RESOURCES[name].fields, "facebook", "linkedin"] } : RESOURCES[name],
     info = RESOURCE_INFO[name],
     { refresh, notify, go } = useApp(),
     { busy, run } = useTask();
@@ -227,12 +228,13 @@ export function ResourcePage({ name }) {
                   <tr key={i}>
                     {tableFields.map((k) => (
                       <td key={k}>
-                        <span
+                        <div
                           className={k === "status" ? "tag" : ""}
                           title={String(row[k] ?? "")}
                         >
-                          {String(row[k] ?? "—").slice(0, 100)}
-                        </span>
+                          {name === "contacts" && ["email", "phone", "whatsapp", "telegram", "facebook", "linkedin", "contact_url"].includes(k)
+                            ? <ContactLinks field={k} value={row[k]} /> : String(row[k] ?? "—").slice(0, 100)}
+                        </div>
                       </td>
                     ))}
                     <td>

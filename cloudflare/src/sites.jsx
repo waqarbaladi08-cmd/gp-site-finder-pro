@@ -12,7 +12,7 @@ import {
   Plus,
 } from "lucide-react";
 import { PUBLIC_FIELDS, toCSV, safeWebURL } from "../shared/domain.mjs";
-import { ContactDetails } from "./contact-analyzer.jsx";
+import { ContactDetails } from "./contact-details.jsx";
 import {
   useApp,
   useData,
@@ -133,7 +133,7 @@ export function SiteTable({ rows, onEdit, onDelete }) {
           title={detail.domain || detail.site}
           onClose={() => setDetail(null)}
         >
-          {user && <ContactDetails key={detail.domain} domain={detail.domain} />}
+          {user && <ContactDetails key={detail.id} domain={detail.domain} siteId={detail.id} />}
           <dl className="detail-grid">
             {PUBLIC_FIELDS.filter(
               (k) => !["id", "site", "domain", "created_at"].includes(k),

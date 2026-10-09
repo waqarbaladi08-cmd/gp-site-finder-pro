@@ -22,7 +22,8 @@ import {
 } from "./auth.mjs";
 import { appBase, stripAppBase } from "../shared/routing.mjs";
 import { WEBSITE_ORIGIN, mountedResponse } from "./routing.mjs";
-import { mergeContacts, extractContacts, hasContact } from "../shared/contacts.mjs";
+import { mergeContacts, extractContacts, hasContact, hydrateContact, storeContact } from "../shared/contacts.mjs";
+import { headerField } from "../shared/import.mjs";
 
 const json = (data, status = 200, headers = {}) =>
   Response.json(data, {
@@ -203,6 +204,7 @@ function insert(db, table, row, { replace = false, pk = ["id"] } = {}) {
   return db.prepare(query).bind(...cols.map((k) => sqlValue(row[k])));
 }
 function resourceRow(resource, input) {
+  if (resource.table === "contacts") input = storeContact(input);
   const row = {};
   for (const k of resource.fields) {
     if (input[k] != null && (k !== "id" || input[k] !== ""))
@@ -362,13 +364,29 @@ async function route(request, env, ctx, additionalOrigin) {
     if (p === "/api/admin/contacts/detail" && m === "GET") {
       const d = domain(url.searchParams.get("domain"));
       if (!d) fail("Enter a valid website domain.");
-      const contact = await db.prepare("SELECT * FROM contacts WHERE domain=?").bind(d).first();
-      const notes = await db.prepare(`SELECT DISTINCT r.id,r.source_file,r.sheet_name,r.field_name,r.field_value
-        FROM sites s JOIN reseller_private r ON r.source_file=s.source_file AND (COALESCE(r.sheet_name,'')='' OR r.sheet_name=s.sheet_name)
-        WHERE s.domain=? ORDER BY r.id LIMIT 100`).bind(d).all();
-      const suppliers = notes.results.map((r) => ({ source_file: r.source_file, sheet_name: r.sheet_name,
-        ...extractContacts([r.field_name + ": " + r.field_value]) })).filter(hasContact);
-      return json({ domain: d, contact, suppliers });
+      const siteID = url.searchParams.has("site_id") ? validID(url.searchParams.get("site_id")) : null;
+      const listing = await (siteID
+        ? db.prepare("SELECT domain,country,source_file,sheet_name FROM sites WHERE id=? AND domain=?").bind(siteID, d)
+        : db.prepare("SELECT domain,country,source_file,sheet_name FROM sites WHERE domain=? ORDER BY id DESC LIMIT 1").bind(d)).first();
+      if (siteID && !listing) fail("Website listing not found.", 404);
+      const saved = await db.prepare("SELECT * FROM contacts WHERE domain=?").bind(d).first();
+      let contact = saved ? hydrateContact(saved) : null;
+      const notes = listing?.source_file ? await db.prepare(`SELECT id,source_file,sheet_name,field_name,field_value
+        FROM reseller_private WHERE source_file=? AND (COALESCE(sheet_name,'')='' OR sheet_name=?)
+        ORDER BY id LIMIT 100`).bind(listing.source_file, listing.sheet_name || "").all() : { results: [] };
+      const sources = new Map();
+      for (const r of notes.results) {
+        const found = extractContacts([r.field_name + ": " + r.field_value], [headerField(r.field_name)]);
+        if (!hasContact(found)) continue;
+        const assigned = domain(text(r.field_value).match(/(?:^|[|\n])\s*(?:website|site|domain|url)\s*:\s*(\S+)/i)?.[1]);
+        if (assigned) {
+          if (assigned === d) contact = mergeContacts(contact || {}, { ...found, domain: d });
+          continue;
+        }
+        const key = JSON.stringify([r.source_file, r.sheet_name || ""]);
+        sources.set(key, mergeContacts(sources.get(key), { ...found, source_file: r.source_file, sheet_name: r.sheet_name }));
+      }
+      return json({ domain: d, country: listing?.country || "", contact, suppliers: [...sources.values()] });
     }
     if (p === "/api/admin/contacts/merge" && m === "POST") {
       const b = await body(request, 300000);
@@ -575,7 +593,7 @@ async function route(request, env, ctx, additionalOrigin) {
             .bind(...values, (page - 1) * 50),
         ]);
         return json({
-          rows: result[1].results,
+          rows: r.table === "contacts" ? result[1].results.map(hydrateContact) : result[1].results,
           total: result[0].results[0].total,
           page,
           pages: Math.max(1, Math.ceil(result[0].results[0].total / 50)),
@@ -583,7 +601,8 @@ async function route(request, env, ctx, additionalOrigin) {
       }
       const input = await body(request, 100000);
       if (m === "POST" || m === "PUT") {
-        const row = resourceRow(r, input);
+        const old = r.table === "contacts" ? await db.prepare("SELECT * FROM contacts WHERE domain=?").bind(domain(input.domain)).first() : null;
+        const row = resourceRow(r, old ? { ...hydrateContact(old), ...input } : input);
         await db.batch([
           insert(db, r.table, row, {
             replace: true,

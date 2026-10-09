@@ -3,7 +3,15 @@ import { parseCSV } from "../shared/import.mjs";
 export function cellText(cell) {
   const v = cell?.value;
   if (v == null) return "";
-  if (typeof v !== "object") return String(v);
+  if (typeof v !== "object") {
+    if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 && /^0{7,15}$/.test(cell.numFmt || ""))
+      return String(v).padStart(cell.numFmt.length, "0");
+    return String(v);
+  }
+  if (v.formula) {
+    const link = v.formula.match(/^(?:_xlfn\.)?HYPERLINK\(\s*"((?:[^"\n]|"")+)"\s*[,;]/i)?.[1]?.replace(/""/g, '"');
+    if (link && /^(https?:|mailto:|tel:)/i.test(link)) return /^https?:/i.test(link) && !/@/.test(v.result || "") ? link : `${v.result || ""} ${link}`.trim();
+  }
   if (v.hyperlink) {
     if (/^(https?:|mailto:|tel:)/i.test(v.hyperlink))
       return /^https?:/i.test(v.hyperlink) && !/@/.test(v.text || "") ? v.hyperlink : `${v.text || ""} ${v.hyperlink}`.trim();

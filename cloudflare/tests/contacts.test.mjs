@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { scanSheet, parseCSV } from "../shared/import.mjs";
-import { extractContacts, normalizePhone, mergeContacts, contactSummary, sheetContactNote } from "../shared/contacts.mjs";
+import { extractContacts, normalizePhone, mergeContacts, contactSummary, sheetContactNote, whatsappURL, contactLink, hydrateContact, storeContact } from "../shared/contacts.mjs";
 import { cellText, readWorkbook } from "../src/workbook.mjs";
 import ExcelJS from "exceljs";
 
@@ -90,7 +90,7 @@ test("contact-only sheets auto-detect formatted local phones and retain every co
   assert.equal(r.privateFields[0].source_file, "contacts-only.xlsx");
   assert.equal(r.privateFields[0].sheet_name, "Team");
   assert.deepEqual(contactSummary([r]), {
-    contacts: [], unassigned: r.unassigned, all: r.unassigned, emails: 2, phones: 3,
+    contacts: [], unassigned: r.unassigned, all: r.unassigned, emails: 2, phones: 3, links: 0,
   });
   const single = scanSheet([["Mobile"], ["0300-1234567"]], "numbers.csv", "Phones");
   assert.equal(single.unassigned[0].phone, "03001234567");
@@ -110,4 +110,77 @@ test("automatic totals count unique contacts across sheets and pre-header phone-
   assert.equal(summary.contacts.length, 1);
   assert.equal(summary.emails, 1);
   assert.equal(summary.phones, 1);
+});
+
+test("adjacent social and contact columns match the website and stay out of public listing rows", () => {
+  const r = scanSheet([
+    ["Website Link", "Gmail", "Contact Number", "FB Link", "Linked In", "WhatsApp"],
+    ["https://www.one.example.com/path", "owner@gmail.com", "03001234567", "facebook.com/publisher.one", "https://www.linkedin.com/in/editor-one", "https://api.whatsapp.com/send?text=Hello&phone=447700900123"],
+    ["two.example.com", "second@example.com", "+1 202 555 0143", "https://fb.com/publisher.two", "linkedin.com/company/publisher-two", ""],
+  ], "sites-and-contacts.xlsx", "Publishers");
+  assert.equal(r.contacts.length, 2);
+  assert.equal(r.contacts[0].domain, "one.example.com");
+  assert.equal(r.contacts[0].facebook, "https://facebook.com/publisher.one");
+  assert.equal(r.contacts[0].linkedin, "https://www.linkedin.com/in/editor-one");
+  assert.equal(r.contacts[0].whatsapp, "+447700900123");
+  assert.equal(r.contacts[0].source_file, "sites-and-contacts.xlsx");
+  assert.equal(r.contacts[1].email, "second@example.com");
+  assert.doesNotMatch(JSON.stringify(r.rows), /owner@gmail|03001234567|facebook|linkedin|447700900123/);
+  const bare = scanSheet([["one.example.com", "https://facebook.com/publisher.one", "https://wa.me/923001234567"]], "no-header.csv", "Sheet");
+  assert.equal(bare.contacts[0].domain, "one.example.com");
+  assert.equal(bare.contacts[0].whatsapp, "+923001234567");
+  const contactOnly = scanSheet([["facebook.com/publisher.one", "linkedin.com/in/editor-one"]], "only-social.csv", "Sheet");
+  assert.equal(contactOnly.contacts.length, 0);
+  assert.equal(contactOnly.unassigned.length, 1);
+});
+
+test("WhatsApp links use international digits, preserve chat links and do not guess ambiguous local numbers", () => {
+  assert.equal(whatsappURL("0300-1234567"), "https://wa.me/923001234567");
+  assert.equal(whatsappURL("+44 7700 900123"), "https://wa.me/447700900123");
+  assert.equal(whatsappURL("0092 300 1234567"), "https://wa.me/923001234567");
+  assert.equal(whatsappURL("12025550143"), "https://wa.me/12025550143");
+  assert.equal(whatsappURL("2025550143"), "");
+  assert.equal(whatsappURL("2025550143", "United States"), "https://wa.me/12025550143");
+  assert.equal(whatsappURL("https://wa.me/message/ABCDEF"), "https://wa.me/message/ABCDEF");
+  assert.equal(contactLink("phone", "03001234567"), "https://wa.me/923001234567");
+  assert.equal(contactLink("whatsapp", "+923001234567"), "https://wa.me/923001234567");
+  assert.equal(contactLink("email", "owner@gmail.com"), "mailto:owner@gmail.com");
+  assert.equal(contactLink("telegram", "@editor_one"), "https://t.me/editor_one");
+});
+
+test("private social links survive merging, backups and legacy notes without a schema migration", () => {
+  const original = { domain: "one.example.com", notes: "Manually checked", facebook: "https://facebook.com/editor.one", linkedin: "https://linkedin.com/in/editor-one" };
+  const stored = storeContact(original);
+  assert.match(stored.notes, /private-contact-links/);
+  assert.equal(hydrateContact(stored).notes, "Manually checked");
+  assert.equal(hydrateContact(stored).facebook, original.facebook);
+  const updated = mergeContacts(stored, { domain: original.domain, email: "editor@example.com", facebook: original.facebook, notes: "Sheet: contacts.xlsx" });
+  assert.equal(updated.linkedin, original.linkedin);
+  assert.equal(updated.notes, "Manually checked\nSheet: contacts.xlsx");
+  assert.deepEqual(hydrateContact(storeContact(updated)), updated);
+  assert.deepEqual(mergeContacts(updated, original), updated);
+  assert.equal(hydrateContact({ notes: "Facebook: https://facebook.com/legacy.editor; phone: +923001234567" }).phone, "+923001234567");
+});
+
+test("social detection rejects lookalike hosts, unsafe protocols and numeric profile IDs as phones", () => {
+  const r = extractContacts(["notfacebook.com/page", "https://facebook.com.evil.example/page", "javascript:alert(1)", "https://facebook.com/profile.php?id=123456789012345"], ["facebook", "facebook", "linkedin", "facebook"]);
+  assert.equal(r.facebook, "https://facebook.com/profile.php?id=123456789012345");
+  assert.equal(r.phone, "");
+  assert.equal(contactLink("facebook", "https://facebook.com.evil.example/page"), "");
+  assert.equal(contactLink("linkedin", "javascript:alert(1)"), "");
+  assert.equal(contactLink("contact_url", "https://user:password@example.com/contact"), "");
+});
+
+test("Excel HYPERLINK formulas and formatted zero-prefixed phone cells retain row matching", async () => {
+  const wb = new ExcelJS.Workbook(), ws = wb.addWorksheet("Links");
+  ws.addRow(["Website", "Phone", "Facebook", "LinkedIn"]);
+  ws.addRow([{ formula: 'HYPERLINK("https://one.example.com", "Visit")', result: "Visit" }, 3001234567, { formula: 'HYPERLINK("https://facebook.com/editor.one", "Facebook")', result: "Facebook" }, { text: "LinkedIn", hyperlink: "https://linkedin.com/in/editor-one" }]);
+  ws.getCell("B2").numFmt = "00000000000";
+  const bytes = await wb.xlsx.writeBuffer();
+  const [sheet] = await readWorkbook({ name: "formulas.xlsx", size: bytes.length, arrayBuffer: async () => bytes });
+  const r = scanSheet(sheet.rows, "formulas.xlsx", sheet.name);
+  assert.equal(r.contacts[0].domain, "one.example.com");
+  assert.equal(r.contacts[0].phone, "03001234567");
+  assert.equal(r.contacts[0].facebook, "https://facebook.com/editor.one");
+  assert.equal(r.contacts[0].linkedin, "https://linkedin.com/in/editor-one");
 });

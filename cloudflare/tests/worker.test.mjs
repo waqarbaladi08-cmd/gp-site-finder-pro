@@ -461,7 +461,7 @@ test("private contact analyzer merges phones and emails, preserves manual fields
   assert.equal(detail.body.contact.status, "Replied");
   assert.equal(detail.body.contact.quoted_price, "80");
   assert.equal(detail.body.contact.notes, "Manual note\n" + sample.notes);
-  const supplier = detail.body.suppliers.find((r) => r.email === "supplier-private@gmail.com");
+  const supplier = detail.body.suppliers.find((r) => r.email.split("; ").includes("supplier-private@gmail.com"));
   assert.equal(supplier.phone, "+447700900123");
   for (const path of ["/api/sites?q=manual", "/api/export?q=manual", "/api/stats", "/api/options"]) {
     const pub = await call(path);
@@ -492,6 +492,68 @@ test("automatically detected sheet-only contacts save privately without a domain
   assert.equal(publisherCount.n, 0);
   for (const path of ["/api/sites", "/api/export", "/api/stats", "/api/options"])
     assert.doesNotMatch(JSON.stringify((await call(path)).body), /auto-private|03001234567/);
+});
+
+test("social contacts persist privately through merge, ordinary edits and backup restore", async () => {
+  const sample = { domain: "social-private.example.com", email: "social-private@gmail.com", phone: "03001234567", facebook: "https://facebook.com/private.editor", linkedin: "https://linkedin.com/in/private-editor", notes: "Checked source row" };
+  const endpoint = "/api/admin/contacts/merge";
+  for (let i = 0; i < 2; i++) assert.equal((await call(endpoint, { method: "POST", auth: true, data: { rows: [sample] } })).status, 200);
+  assert.equal((await call("/api/admin/resources/contacts", { method: "PUT", auth: true, data: { domain: sample.domain, email: "updated-private@gmail.com", notes: "Updated manually" } })).status, 200);
+  const detailPath = "/api/admin/contacts/detail?domain=" + sample.domain;
+  assert.equal((await call(detailPath)).status, 401);
+  let detail = await call(detailPath, { auth: true });
+  assert.equal(detail.body.contact.facebook, sample.facebook);
+  assert.equal(detail.body.contact.linkedin, sample.linkedin);
+  assert.equal(detail.body.contact.notes, "Updated manually");
+  assert.equal(detail.body.contact.email, "updated-private@gmail.com");
+  const backup = await call("/api/admin/backup?table=contacts", { auth: true });
+  const row = backup.body.rows.find((r) => r.domain === sample.domain);
+  assert.match(row.notes, /private-contact-links/);
+  assert.equal((await call("/api/admin/restore", { method: "POST", auth: true, data: { table: "contacts", rows: [row], confirm: "MERGE BACKUP" } })).status, 200);
+  detail = await call(detailPath, { auth: true });
+  assert.equal(detail.body.contact.linkedin, sample.linkedin);
+  const database = await call("/api/admin/resources/contacts", { auth: true });
+  assert.equal(database.body.rows.find((r) => r.domain === sample.domain).facebook, sample.facebook);
+  for (const path of ["/api/sites", "/api/export", "/api/stats", "/api/options"])
+    assert.doesNotMatch(JSON.stringify((await call(path)).body), /updated-private|private.editor|private-editor|03001234567/);
+});
+
+test("opening a website detects saved sheet contacts automatically and scopes them to the selected source listing", async () => {
+  const ids = [];
+  for (const [source_file, sheet_name] of [["source-a.xlsx", "Alpha"], ["source-b.xlsx", "Beta"]]) {
+    const r = prepareSite({ site: "scoped.example.com", source_file, sheet_name });
+    const keys = Object.keys(r);
+    const result = await db.prepare(`INSERT INTO sites(${keys.join(",")}) VALUES(${keys.map(() => "?")})`).bind(...keys.map((k) => r[k])).run();
+    ids.push(result.meta.last_row_id);
+  }
+  const notes = [
+    { source_file: "source-a.xlsx", sheet_name: "Alpha", field_name: "Sheet owner", field_value: "Email: alpha-private@gmail.com | Mobile: 03001234567 | Facebook: https://facebook.com/alpha.private" },
+    { source_file: "source-a.xlsx", sheet_name: "Alpha", field_name: "Retained website row", field_value: "Website: scoped.example.com | Email: row-private@example.com | LinkedIn: https://linkedin.com/in/scoped-private" },
+    { source_file: "source-a.xlsx", sheet_name: "Alpha", field_name: "Another website row", field_value: "Website: unrelated.example.com | Email: unrelated-private@example.com | WhatsApp: +447700900123" },
+    { source_file: "source-b.xlsx", sheet_name: "Beta", field_name: "WhatsApp", field_value: "+12025550143 | beta-private@gmail.com | https://linkedin.com/in/beta-private" },
+  ];
+  assert.equal((await call("/api/admin/resource-batch", { method: "POST", auth: true, data: { resource: "resellers", rows: notes } })).status, 200);
+  const path = "/api/admin/contacts/detail?domain=scoped.example.com&site_id=";
+  assert.equal((await call(path + ids[0])).status, 401);
+  const a = await call(path + ids[0], { auth: true });
+  assert.equal(a.status, 200);
+  assert.equal(a.body.suppliers.length, 1);
+  assert.equal(a.body.suppliers[0].source_file, "source-a.xlsx");
+  assert.equal(a.body.suppliers[0].email, "alpha-private@gmail.com");
+  assert.equal(a.body.suppliers[0].phone, "03001234567");
+  assert.equal(a.body.suppliers[0].facebook, "https://facebook.com/alpha.private");
+  assert.equal(a.body.contact.email, "row-private@example.com");
+  assert.equal(a.body.contact.linkedin, "https://linkedin.com/in/scoped-private");
+  assert.doesNotMatch(JSON.stringify(a.body), /beta-private|unrelated-private/);
+  const b = await call(path + ids[1], { auth: true });
+  assert.equal(b.body.suppliers[0].email, "beta-private@gmail.com");
+  assert.equal(b.body.suppliers[0].whatsapp, "+12025550143");
+  assert.equal(b.body.contact, null);
+  assert.doesNotMatch(JSON.stringify(b.body), /alpha-private|row-private|unrelated-private/);
+  assert.equal((await call("/api/admin/contacts/detail?domain=wrong.example.com&site_id=" + ids[0], { auth: true })).status, 404);
+  assert.equal(a.response.headers.get("Cache-Control"), "no-store");
+  for (const p of ["/api/sites?q=scoped", "/api/export?q=scoped", "/api/stats", "/api/options"])
+    assert.doesNotMatch(JSON.stringify((await call(p)).body), /alpha-private|beta-private|row-private|facebook.com|linkedin.com/);
 });
 
 test("sign-out revokes the existing server session", async () => {

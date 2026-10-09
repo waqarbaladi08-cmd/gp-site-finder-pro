@@ -65,6 +65,26 @@ To create a local admin, run `python3 scripts/admin_user.py private/admin.sql` a
 
 ## Feature mapping
 
+Opening a website while signed in as admin shows clickable private contacts above
+the price and metrics. Numbers open WhatsApp when an international number can be
+determined; a separate Call link remains available. Email addresses offer both
+mailto and Gmail compose links. Facebook, LinkedIn and Telegram links are retained
+from spreadsheet cells and hyperlinks, including literal Excel HYPERLINK formulas.
+Pakistani `03xx` mobile numbers are converted to `92` for WhatsApp; ambiguous local
+numbers require a country code instead of generating an incorrect chat link.
+
+Imports match contacts to the domain on the same row. Website details also scan
+retained private notes from that exact listing's source file and sheet automatically.
+Shared supplier contacts are labeled separately from publisher contacts. Explicitly
+named website notes are shown only for that domain. Public APIs and exports continue
+to exclude all contact values. Original cells discarded by an older importer require
+the original sheet to be uploaded again; the app cannot reconstruct missing data.
+
+Facebook and LinkedIn use encoded metadata in the existing private contact notes
+column. The API decodes it for private forms and details; full backups retain it.
+This update needs no D1 migration. `npm test` covers contact links, sheet matching,
+source isolation, edits, backup round trips and unauthenticated/public access.
+
 | Streamlit tool                              | Cloudflare workspace                                                                                         |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Dashboard, Search, Statistics               | Live D1 counts, indexed filters, pagination and publisher detail dialog                                      |

@@ -2,34 +2,10 @@ import React, { useState } from "react";
 import { UploadCloud, LockKeyhole, Download, Search } from "lucide-react";
 import { scanSheet, parseCSV, headerField } from "../shared/import.mjs";
 import { domain, toCSV } from "../shared/domain.mjs";
-import { analyzeContactRows, CONTACT_FIELDS, extractContacts, hasContact, contactSummary, sheetContactNote, splitValues, contactURL, normalizePhone } from "../shared/contacts.mjs";
+import { analyzeContactRows, CONTACT_FIELDS, extractContacts, hasContact, contactSummary, sheetContactNote } from "../shared/contacts.mjs";
+import { ContactLinks } from "./contact-links.jsx";
 import { readWorkbook } from "./workbook.mjs";
-import { useApp, useData, useTask, api, Loading, ErrorBox, Heading, Notice, Field, download, label } from "./lib.jsx";
-
-export function ContactDetails({ domain: target }) {
-  const { user, go } = useApp();
-  const { data, error, loading } = useData(user ? "/api/admin/contacts/detail?" + new URLSearchParams({ domain: target }) : null);
-  if (!user) return null;
-  return <section className="contact-details">
-    <h2><LockKeyhole size={18} /> Private contact details</h2>
-    {loading ? <Loading label="Loading private contacts…" /> : error ? <ErrorBox error={error} /> : data?.contact ? <>
-      <dl className="detail-grid">{[...CONTACT_FIELDS, "status", "notes"].map((key) => <div key={key}>
-        <dt>{label(key)}</dt><dd>{splitValues(data.contact[key]).length ? splitValues(data.contact[key]).map((v, i) => {
-          const email = key === "email" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
-          const phone = ["phone", "whatsapp"].includes(key) && normalizePhone(v);
-          const url = key === "contact_url" && contactURL(v);
-          const href = email ? `mailto:${v}` : phone ? `tel:${phone}` : url || "";
-          return <div key={i}>{href ? <a href={href} {...(url ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{v}</a> : v}</div>;
-        }) : "Not recorded"}</dd>
-      </div>)}</dl>
-      <p className="subtle">Detected contact details need checking before outreach.</p>
-    </> : <p>No contact saved for this website yet. Analyze the original sheet to find its email and phone number.</p>}
-    {!!data?.suppliers?.length && <div><h3>Supplier / sheet contacts</h3><p className="subtle">These details were found in this listing’s source sheet. They may belong to a reseller rather than the publisher.</p>
-      {data.suppliers.map((r, i) => <div className="contact-assignment" key={i}><strong>{r.source_file} · {r.sheet_name || "Sheet owner"}</strong><p>{[r.email, r.phone, r.whatsapp, r.contact_url].filter(Boolean).join(" · ")}</p></div>)}
-    </div>}
-    <button onClick={() => go("contact-analyzer", { domain: target })}>Open Contact Analyzer</button>
-  </section>;
-}
+import { useApp, useTask, api, Heading, Notice, Field, download, label } from "./lib.jsx";
 
 export function ContactAnalyzer() {
   const [reports, setReports] = useState([]), [rawSheets, setRawSheets] = useState([]);
@@ -38,8 +14,8 @@ export function ContactAnalyzer() {
   const [page, setPage] = useState(1), [query, setQuery] = useState("");
   const [assignments, setAssignments] = useState({});
   const { busy, run } = useTask(), { refresh, notify, go } = useApp();
-  const { contacts, unassigned, all, emails, phones } = contactSummary(reports);
-  const filtered = all.filter((r) => [r.domain, r.email, r.phone, r.whatsapp, r.source_file, r.sheet_name, r.admin_name].join(" ").toLowerCase().includes(query.toLowerCase()));
+  const { contacts, unassigned, all, emails, phones, links } = contactSummary(reports);
+  const filtered = all.filter((r) => [r.domain, ...CONTACT_FIELDS.map((key) => r[key]), r.source_file, r.sheet_name].join(" ").toLowerCase().includes(query.toLowerCase()));
   const displayPage = Math.min(page, Math.max(1, Math.ceil(filtered.length / 25)));
   const rows = filtered.slice((displayPage - 1) * 25, displayPage * 25);
   function showSheets(sheets, name) {
@@ -48,7 +24,7 @@ export function ContactAnalyzer() {
     setRawSheets(sheets); setFilename(name); setReports(next);
     setComplete(false); setAssignments({}); setPage(1); setQuery("");
     setProgress(detected.all.length
-      ? `Automatically detected ${detected.emails} email addresses and ${detected.phones} phone / WhatsApp numbers across ${sheets.length} sheets. Contacts without a website can also be saved privately.`
+      ? `Automatically detected ${detected.emails} emails, ${detected.phones} phone / WhatsApp numbers and ${detected.links} social / contact links across ${sheets.length} sheets. Contacts without a website can also be saved privately.`
       : "No email, phone or contact link was found in this sheet. Check that it contains contact details.");
   }
   async function save() {
@@ -103,11 +79,11 @@ export function ContactAnalyzer() {
     }
     setReports(scanned); setRawSheets([]); setFilename("Saved sheet notes"); setComplete(false); setAssignments({}); setPage(1); setQuery("");
     const detected = contactSummary(scanned);
-    setProgress(scanned.length ? `Automatically detected ${detected.emails} email addresses and ${detected.phones} phone / WhatsApp numbers in saved notes. Website assignment is optional.` : "No contact details found in saved notes. Upload the original sheet to analyze cells that were not retained during the earlier import.");
+    setProgress(scanned.length ? `Automatically detected ${detected.emails} emails, ${detected.phones} phone / WhatsApp numbers and ${detected.links} social / contact links in saved notes. Website assignment is optional.` : "No contact details found in saved notes. Upload the original sheet to analyze cells that were not retained during the earlier import.");
   }
   return <>
     <Heading title="Contact Analyzer" eyebrow="PRIVATE ADMIN TOOL" actions={<button onClick={() => go("contacts")}>Open private database</button>}>
-      Upload a sheet to automatically detect emails, phone numbers and WhatsApp across every worksheet. No website column is required.
+      Upload a sheet to automatically match emails, WhatsApp, Facebook and LinkedIn links to each website. Every worksheet is scanned.
     </Heading>
     <Notice><LockKeyhole size={18} /> Contacts are visible only after admin sign-in. Detection checks format; it does not verify ownership or deliverability.</Notice>
     <div className="contact-analyzer-inputs">
@@ -133,6 +109,7 @@ export function ContactAnalyzer() {
         <div className="stat-card"><small>Phone / WhatsApp numbers</small><strong>{phones.toLocaleString()}</strong></div>
         <div className="stat-card"><small>Website matches</small><strong>{contacts.length.toLocaleString()}</strong></div>
         <div className="stat-card"><small>Sheet contacts</small><strong>{unassigned.length.toLocaleString()}</strong></div></div>
+      <Notice>{links} social / contact links detected. Click any contact in the table to open it.</Notice>
       {rawSheets.length > 0 && <details className="panel form-panel"><summary>Review detected headers</summary>{reports.map((r, i) => <div key={i}>
         <h3>{r.sheet_name}</h3><Field label="Header row (0 for no header)" type="number" min="0" max={Math.min(rawSheets[i].rows.length, 100)} disabled={busy || complete} value={r.header_row} onChange={(v) => {
           const h = Number(v); if (!Number.isInteger(h) || h < 0 || h > Math.min(rawSheets[i].rows.length, 100)) return;
@@ -142,7 +119,7 @@ export function ContactAnalyzer() {
       <section className="panel form-panel"><div className="panel-heading flush"><h2>Detected contacts</h2>
         <button disabled={!all.length || busy} onClick={() => download("private-contact-candidates.csv", toCSV(all, ["domain", ...CONTACT_FIELDS, "source_file", "sheet_name", "notes"]), "text/csv;charset=utf-8")}><Download size={17} /> Export private CSV</button></div>
         <Field label="Filter contacts" value={query} onChange={(v) => { setQuery(v); setPage(1); }} />
-        <div className="table-wrap"><table><thead><tr><th>Website / source</th><th>Email / Gmail</th><th>Phone</th><th>WhatsApp</th><th>Contact page</th></tr></thead><tbody>{rows.map((r, i) => <tr key={`${r.domain}-${i}`}><td>{r.domain || <><strong>Sheet contact</strong><br /><small>{r.source_file} · {r.sheet_name}</small></>}</td><td>{r.email || "—"}</td><td>{r.phone || "—"}</td><td>{r.whatsapp || "—"}</td><td>{r.contact_url || "—"}</td></tr>)}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>Website / source</th>{["email", "phone", "whatsapp", "facebook", "linkedin", "telegram", "contact_url"].map((key) => <th key={key}>{label(key)}</th>)}</tr></thead><tbody>{rows.map((r, i) => <tr key={`${r.domain}-${i}`}><td>{r.domain || <><strong>Sheet contact</strong><br /><small>{r.source_file} · {r.sheet_name}</small></>}</td>{["email", "phone", "whatsapp", "facebook", "linkedin", "telegram", "contact_url"].map((key) => <td key={key}><ContactLinks field={key} value={r[key]} /></td>)}</tr>)}</tbody></table></div>
         {!rows.length && <p>No matching contacts.</p>}
         <div className="form-actions"><button disabled={displayPage <= 1} onClick={() => setPage(displayPage - 1)}>Previous</button><span>Page {displayPage} of {Math.max(1, Math.ceil(filtered.length / 25))}</span><button disabled={displayPage * 25 >= filtered.length} onClick={() => setPage(displayPage + 1)}>Next</button></div>
       </section>

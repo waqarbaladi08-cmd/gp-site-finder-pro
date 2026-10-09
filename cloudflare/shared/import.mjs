@@ -15,7 +15,7 @@ export const IMPORT_FIELDS = [
 ];
 const patterns = [
   ["contact_url", /contact.*(?:page|url|link|form)|submission.*(?:page|url|link)|write for us|editorial.*(?:page|url|link)/],
-  ["site", /^(website|site|domain|url)s?( url)?$|website address/],
+  ["site", /^(web ?site|site|domain|url)s?( (?:url|links?|name|address))?$|website address/],
   ["country", /country|geography|location/],
   ["da", /^(da|domain authority)$/],
   ["dr", /^(dr|ahrefs dr|domain rating)$/],
@@ -33,6 +33,8 @@ const patterns = [
   ["whatsapp", /whats ?app/],
   ["phone", /phone|mobile|telephone|cell|contact (?:no|number)|^contact$|^tel$|فون|موبائل/],
   ["telegram", /telegram/],
+  ["facebook", /facebook|^fb(?: link| url| profile| page)?$/],
+  ["linkedin", /linked ?in/],
   ["admin_name", /owner|contact name|admin name|publisher name|^(?:full )?name$/],
 ];
 export function headerField(value) {
@@ -48,7 +50,7 @@ export function detectHeader(rows) {
     score = -1, contactBest = -1, contactScore = -1;
   rows.slice(0, 100).forEach((row, i) => {
     // Values containing an address or phone are data, not header labels.
-    const fields = new Set(row.map((cell) => /@|https?:\/\/|\d{3}/i.test(text(cell))
+    const fields = new Set(row.map((cell) => domain(cell) || /@|https?:\/\/|\d{3}/i.test(text(cell))
       ? "" : headerField(cell)).filter(Boolean));
     if (fields.has("site")) {
       const s = fields.size * 3 + (fields.has("general_price") ? 4 : 0);
@@ -57,7 +59,7 @@ export function detectHeader(rows) {
         score = s;
       }
     }
-    const contactFields = [...fields].filter((field) => ["email", "phone", "whatsapp", "telegram", "contact_url"].includes(field));
+    const contactFields = [...fields].filter((field) => ["email", "phone", "whatsapp", "telegram", "facebook", "linkedin", "contact_url"].includes(field));
     const singleContactLabel = row.filter((cell) => text(cell)).length === 1 && row.some((cell) =>
       /^(?:e[ -]?mail(?: address| id)?|gmail|phone(?: number| no)?|mobile(?: number| no)?|contact(?: number| no)?|whats ?app(?: number| no)?|telephone|tel)[\s.#:]*$/i.test(text(cell)));
     if (contactFields.length && (fields.size >= 2 || singleContactLabel) && fields.size > contactScore) {
@@ -129,7 +131,7 @@ export function scanSheet(raw, source_file, sheet_name, override = null) {
     const value = row.map(text).filter(Boolean).join(" | ");
     if (
       value &&
-      /email|whatsapp|contact|phone|telegram|paypal|bank|iban|@/i.test(value)
+      /email|whatsapp|contact|phone|telegram|facebook|linkedin|fb\.|wa\.me|paypal|bank|iban|@/i.test(value)
     ) {
       privateFields.push({
         source_file,
