@@ -1,8 +1,9 @@
 import { domain, text } from "./domain.mjs";
 import { headerField } from "./import.mjs";
-import { contactSummary, detectRowDomain, extractContacts } from "./contacts.mjs";
+import { CONTACT_FIELDS, contactSummary, detectRowDomain, extractContacts, hasContact, hydrateContact } from "./contacts.mjs";
 
-// Preserve each source in the preview. Domain merging is only for saving contacts.
+// Preserve each source both in the preview and when saving. Counts can still
+// aggregate by domain without losing the file that supplied a particular value.
 export function contactPreviewRows(reports) {
   return reports.flatMap((report) => [...(report.contacts || []), ...(report.unassigned || [])]
     .map((row) => ({ ...row, source_file: row.source_file || report.source_file || "",
@@ -25,6 +26,20 @@ export function contactSourceSummaries(reports) {
     return { ...source, entries: rows.length, websites: summary.contacts.length,
       emails: summary.emails, phones: summary.phones, links: summary.links };
   });
+}
+
+export const websiteContactField = (value) => `Detected website contact: ${domain(value)}`;
+
+// Use the existing private sheet store so attribution survives backups without
+// requiring a production schema migration. The JSON keeps the website explicit.
+export function sourceContactNote(record) {
+  const d = domain(record.domain), source_file = text(record.source_file);
+  if (!d || !source_file || !hasContact(record)) return null;
+  const contact = hydrateContact(record);
+  return { source_file, sheet_name: text(record.sheet_name),
+    field_name: websiteContactField(d),
+    field_value: JSON.stringify({ domain: d, ...Object.fromEntries(
+      CONTACT_FIELDS.filter((key) => contact[key]).map((key) => [key, contact[key]])) }) };
 }
 
 // Older imports can retain JSON rows or labeled free-form notes. Use their

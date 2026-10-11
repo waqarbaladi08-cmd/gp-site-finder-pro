@@ -31,7 +31,7 @@ const patterns = [
   ["type", /niche|category|site type/],
   ["email", /e ?mail|gmail/],
   ["whatsapp", /whats ?app/],
-  ["phone", /phone|mobile|telephone|cell|contact (?:no|number)|^contact$|^tel$|فون|موبائل/],
+  ["phone", /phone|mobile|telephone|cell|contact\s*(?:no|number)|^contact$|^tel$|فون|موبائل/],
   ["telegram", /telegram/],
   ["facebook", /facebook|^fb(?: link| url| profile| page)?$/],
   ["linkedin", /linked ?in/],

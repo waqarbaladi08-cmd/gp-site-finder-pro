@@ -4,6 +4,7 @@ export const SOCIAL_FIELDS = ["facebook", "linkedin"];
 export const CONTACT_FIELDS = ["email", "phone", "whatsapp", "facebook", "linkedin", "telegram", "contact_url", "admin_name"];
 const linksMarker = "[private-contact-links] ";
 const contactHint = /phone|mobile|cell(?:phone)?|telephone|tel\b|contact(?:\s*(?:no|number))?|whats\s*app|واٹس|فون|موبائل/i;
+const labeledPhone = /(?:^|[\s|;,])(?:phone|mobile|cell(?:phone)?|telephone|tel|contact(?:\s*(?:no|number))?|whats\s*app|واٹس|فون|موبائل)(?![a-z0-9])\s*(?:number|no\.?)?\s*[:#=-]?\s*(?:\+|00|\()?\d/i;
 const metricFields = new Set(["site", "country", "da", "dr", "traffic", "general_price", "casino_price", "payment_method", "tat", "link_type", "type"]);
 const unique = (items) => [...new Map(items.filter(Boolean).map((v) => [v.toLowerCase(), v])).values()];
 export const splitValues = (value) => text(value).split(/[;\n]+/).map((s) => s.trim()).filter(Boolean);
@@ -99,7 +100,9 @@ export function extractContacts(cells, fields = []) {
         out.contact_url.push(contactURL(url.replace(/[.,;]+$/, "")));
     }
     const isPhone = field === "phone" || field === "whatsapp";
-    if (metricFields.has(field)) return;
+    // Footer contact notes can sit under a website or metric column. An
+    // explicit phone label overrides that column; ordinary metrics never do.
+    if (metricFields.has(field) && !labeledPhone.test(s)) return;
     const cleaned = urls.reduce((v, url) => v.replace(url, " "), s).replace(/\S+@\S+/g, " ");
     for (const m of cleaned.matchAll(/(?:\+|00)?\d[\d ().-]{5,24}\d/g)) {
       const candidate = m[0].trim();

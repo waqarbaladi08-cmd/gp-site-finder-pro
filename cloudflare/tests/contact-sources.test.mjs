@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
 import { scanSheet } from "../shared/import.mjs";
 import { contactSummary } from "../shared/contacts.mjs";
-import { contactPreviewRows, contactSourceSummaries, savedSourceContact } from "../shared/contact-sources.mjs";
+import { contactPreviewRows, contactSourceSummaries, savedSourceContact, sourceContactNote } from "../shared/contact-sources.mjs";
 import { readWorkbook } from "../src/workbook.mjs";
 
-test("the same website keeps every sheet's number and source in preview and export, while saving merges domains", () => {
+test("the same website keeps every sheet's number and source in preview and export, while summary counts merge domains", () => {
   const reports = [
     scanSheet([["Website", "Phone"], ["publisher.example.com", "03001234567"]], "all-tabs.xlsx", "Alpha"),
     scanSheet([["Website", "Phone"], ["publisher.example.com", "+44 7700 900123"]], "all-tabs.xlsx", "Beta"),
@@ -26,6 +26,23 @@ test("the same website keeps every sheet's number and source in preview and expo
   assert.equal(summary.length, 4);
   assert.deepEqual(summary.map((r) => r.phones), [1, 1, 1, 0]);
   assert.equal(summary[3].entries, 0);
+});
+
+test("saved source records retain the explicit publisher and do not acquire another sheet's channels", () => {
+  const reports = [
+    scanSheet([["Website", "Phone", "Facebook"], ["publisher.example.com", "03001234567", "facebook.com/elite.editor"]], "Elite.xlsx", "Publishers"),
+    scanSheet([["Website", "WhatsApp", "LinkedIn"], ["publisher.example.com", "+44 7700 900123", "linkedin.com/in/gp-editor"]], "GP Post.xlsx", "Publishers"),
+  ];
+  const saved = contactPreviewRows(reports).map((r) => savedSourceContact(sourceContactNote(r)));
+  assert.equal(saved[0].domain, "publisher.example.com");
+  assert.equal(saved[0].source_file, "Elite.xlsx");
+  assert.equal(saved[0].phone, "03001234567");
+  assert.equal(saved[0].whatsapp, "");
+  assert.equal(saved[0].linkedin, "");
+  assert.equal(saved[1].source_file, "GP Post.xlsx");
+  assert.equal(saved[1].whatsapp, "+447700900123");
+  assert.equal(saved[1].facebook, "");
+  assert.equal(sourceContactNote({ email: "supplier@example.com", source_file: "Elite.xlsx" }), null);
 });
 
 test("saved JSON records use website headers even when another domain appears in a contact-page column", () => {

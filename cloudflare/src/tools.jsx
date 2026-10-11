@@ -19,6 +19,7 @@ import {
 } from "../shared/import.mjs";
 import { readWorkbook } from "./workbook.mjs";
 import { contactSummary } from "../shared/contacts.mjs";
+import { importSheetReports } from "../shared/import-flow.mjs";
 import { outreach } from "../shared/outreach.mjs";
 import { BACKUP_TABLES, RESOURCES, domain } from "../shared/domain.mjs";
 import {
@@ -221,6 +222,7 @@ export function ImportPage() {
     [reports, setReports] = useState([]),
     [progress, setProgress] = useState(""),
     [complete, setComplete] = useState(false),
+    [automatic, setAutomatic] = useState(true),
     { refresh, notify } = useApp(),
     { busy, run } = useTask();
   const total = reports.reduce((n, r) => n + r.rows.length, 0),
@@ -229,56 +231,32 @@ export function ImportPage() {
       (n, r) => n + r.contacts.length + r.privateFields.length,
       0,
     );
-  async function batchResource(resource, rows) {
-    for (let i = 0; i < rows.length; i += 20)
-      await api("/api/admin/resource-batch", {
-        method: "POST",
-        body: { resource, rows: rows.slice(i, i + 20) },
-      });
-  }
-  const start = () =>
-    run(async () => {
-      let inserted = 0,
-        processed = 0;
-      setComplete(false);
-      for (const report of reports) {
-        for (let i = 0; i < report.rows.length; i += 25) {
-          const r = await api("/api/admin/import", {
-            method: "POST",
-            body: { rows: report.rows.slice(i, i + 25) },
-          });
-          inserted += r.inserted;
-          processed += r.submitted;
-          setProgress(
-            `${processed.toLocaleString()} / ${total.toLocaleString()} websites processed`,
-          );
-        }
-        for (let i = 0; i < report.contacts.length; i += 20)
-          await api("/api/admin/contacts/merge", { method: "POST", body: { rows: report.contacts.slice(i, i + 20) } });
-        await batchResource("resellers", report.privateFields);
-        await batchResource("structures", [
-          {
-            source_file: filename,
-            sheet_name: report.sheet_name,
-            header_row: report.header_row,
-            status: report.rows.length ? "Imported" : report.unassigned.length ? "Contacts imported" : "No valid website table",
-            mapped_fields: JSON.stringify(report.mapping),
-            private_count: report.contacts.length + report.privateFields.length,
-          },
-        ]);
-      }
+  async function saveReports(next) {
+    setComplete(false);
+    try {
+      const { inserted, total: submitted, detected: found } = await importSheetReports(next, api, setProgress);
       setProgress(
-        `${inserted.toLocaleString()} websites added. ${(total - inserted).toLocaleString()} existing or previously deleted listings skipped. ${detected.emails} emails, ${detected.phones} phone / WhatsApp numbers and ${detected.links} social / contact links saved privately.`,
+        `${inserted.toLocaleString()} websites added. ${(submitted - inserted).toLocaleString()} existing or previously deleted listings skipped. ${found.emails} emails, ${found.phones} phone / WhatsApp numbers and ${found.links} social / contact links saved privately with their original file and sheet.`,
       );
       setComplete(true);
       refresh();
       notify("Import completed.");
-    });
+    } catch (error) {
+      setProgress(`Import paused: ${error.message} You can retry the import; already saved rows will be preserved.`);
+      refresh();
+      throw error;
+    }
+  }
+  const start = () => run(() => saveReports(reports));
   return (
     <>
       <Heading title="Import Excel / CSV" eyebrow="GROW YOUR DIRECTORY">
-        Email, phone, WhatsApp, Facebook and LinkedIn contacts are matched to websites automatically and saved for admins with the import.
+        Upload a sheet to automatically import its websites and private email, phone, WhatsApp, Facebook and LinkedIn contacts. Each contact keeps its original file and tab.
       </Heading>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={automatic} disabled={busy} onChange={(e) => setAutomatic(e.target.checked)} />
+        Automatically import and save contacts after upload
+      </label>
       <label className={"upload-zone " + (busy ? "disabled" : "")}>
         <UploadCloud size={36} />
         <strong>{filename || "Choose a publisher spreadsheet"}</strong>
@@ -293,6 +271,7 @@ export function ImportPage() {
               const file = e.target.files[0];
               if (!file) return;
               e.target.value = "";
+              setReports([]); setSheets([]); setComplete(false);
               setProgress("Reading spreadsheet…");
               setFilename(file.name);
               const s = await readWorkbook(file);
@@ -300,8 +279,11 @@ export function ImportPage() {
               const next = s.map((x) => scanSheet(x.rows, file.name, x.name));
               setReports(next);
               const found = contactSummary(next);
-              setComplete(false);
-              setProgress(`Automatically detected ${found.emails} emails, ${found.phones} phone / WhatsApp numbers and ${found.links} social / contact links. Review the preview, then import to save them privately.`);
+              setProgress(`Automatically detected ${found.emails} emails, ${found.phones} phone / WhatsApp numbers and ${found.links} social / contact links.${automatic ? " Saving each sheet privately…" : " Review the preview, then import to save them privately."}`);
+              if (automatic && next.some((r) => r.rows.length || r.contacts.length || r.privateFields.length))
+                await saveReports(next);
+              else if (automatic)
+                setProgress("No websites or contacts were detected. Review the header rows below, or choose a sheet containing contact details.");
             })
           }
         />
@@ -403,7 +385,7 @@ export function ImportPage() {
                 </div>
               ) : (
                 <Notice>
-                  {r.unassigned.length ? `${r.unassigned.length} sheet contact entries detected. They will be saved privately without a website assignment.` : "No website column detected. Contact and payment notes will still be kept privately."}
+                  {r.unassigned.length ? `${r.unassigned.length} sheet contact entries ${complete ? "saved" : "detected"} privately with this file and tab, without a publisher assignment.` : "No website column detected. Any detected contacts and payment notes are kept privately."}
                 </Notice>
               )}
             </section>

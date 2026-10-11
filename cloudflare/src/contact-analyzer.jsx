@@ -4,6 +4,7 @@ import { scanSheet, parseCSV } from "../shared/import.mjs";
 import { domain, toCSV } from "../shared/domain.mjs";
 import { CONTACT_FIELDS, hasContact, contactSummary, sheetContactNote } from "../shared/contacts.mjs";
 import { contactPreviewRows, contactSourceSummaries, savedSourceContact } from "../shared/contact-sources.mjs";
+import { saveContactRows, savePrivateRows } from "../shared/import-flow.mjs";
 import { ContactLinks } from "./contact-links.jsx";
 import { readWorkbook } from "./workbook.mjs";
 import { useApp, useTask, api, Heading, Notice, Field, download, label } from "./lib.jsx";
@@ -12,6 +13,7 @@ export function ContactAnalyzer() {
   const [reports, setReports] = useState([]), [rawSheets, setRawSheets] = useState([]);
   const [filename, setFilename] = useState(""), [pasted, setPasted] = useState("");
   const [progress, setProgress] = useState(""), [complete, setComplete] = useState(false);
+  const [automatic, setAutomatic] = useState(true);
   const [page, setPage] = useState(1), [query, setQuery] = useState("");
   const [assignments, setAssignments] = useState({});
   const { busy, run } = useTask(), { refresh, notify, go } = useApp();
@@ -28,32 +30,39 @@ export function ContactAnalyzer() {
     setProgress(detected.all.length
       ? `Automatically detected ${detected.emails} emails, ${detected.phones} phone / WhatsApp numbers and ${detected.links} social / contact links across ${sheets.length} sheets. Contacts without a website can also be saved privately.`
       : "No email, phone or contact link was found in this sheet. Check that it contains contact details.");
+    return next;
   }
-  async function save() {
-    let saved = 0, savedNotes = 0;
-    const selected = unassigned.flatMap((r, i) => {
-      const value = assignments[i]?.trim();
+  async function receiveSheets(sheets, name) {
+    const next = showSheets(sheets, name);
+    if (automatic && contactSummary(next).all.length) await save(next, {});
+  }
+  async function save(nextReports = reports, selectedAssignments = assignments) {
+    const sheetRows = contactSummary(nextReports).unassigned;
+    const selected = sheetRows.flatMap((r, i) => {
+      const value = selectedAssignments[i]?.trim();
       if (!value) return [];
       const d = domain(value);
       if (!d) throw new Error(`Enter a valid website for unassigned contact ${i + 1}.`);
       return [{ ...r, domain: d }];
     });
-    const matched = contactSummary([{ contacts: [...contacts, ...selected] }]).contacts;
-    const sheetContacts = unassigned.filter((r, i) => !assignments[i]?.trim());
+    const matched = [...contactPreviewRows(nextReports).filter((r) => r.domain), ...selected];
+    const sheetContacts = sheetRows.filter((r, i) => !selectedAssignments[i]?.trim());
     const pendingNotes = sheetContacts.filter((r) => !r.persisted).map(sheetContactNote);
-    for (let i = 0; i < matched.length; i += 20) {
-      const r = await api("/api/admin/contacts/merge", { method: "POST", body: { rows: matched.slice(i, i + 20) } });
-      saved += r.saved; setProgress(`${saved} / ${matched.length} website contacts saved privately…`);
-    }
-    for (let i = 0; i < pendingNotes.length; i += 20) {
-      const r = await api("/api/admin/resource-batch", { method: "POST", body: { resource: "resellers", rows: pendingNotes.slice(i, i + 20) } });
-      savedNotes += r.saved; setProgress(`${savedNotes} / ${pendingNotes.length} sheet contacts saved privately…`);
+    setComplete(false);
+    let saved;
+    try {
+      saved = await saveContactRows(matched, api, setProgress);
+      await savePrivateRows("resellers", pendingNotes, api);
+    } catch (error) {
+      setProgress(`Contact saving paused: ${error.message} Retry to finish saving; existing contacts are preserved.`);
+      refresh();
+      throw error;
     }
     if (!saved && !sheetContacts.length) throw new Error("Upload a sheet containing contact details first.");
     setComplete(true); refresh();
     setProgress(!saved && !pendingNotes.length
       ? `${sheetContacts.length} sheet contact entries are already saved privately. No website assignment is needed.`
-      : `${saved} website contact records saved. ${sheetContacts.length} sheet contact entries available privately. Existing contacts and notes were preserved.`);
+      : `${saved} website / sheet contact records saved with their original file and tab. ${sheetContacts.length} sheet contact entries available privately. Existing contacts and notes were preserved.`);
     notify("Private contacts saved.");
   }
   async function analyzeSaved() {
@@ -76,13 +85,14 @@ export function ContactAnalyzer() {
   }
   return <>
     <Heading title="Contact Analyzer" eyebrow="PRIVATE ADMIN TOOL" actions={<button onClick={() => go("contacts")}>Open private database</button>}>
-      Upload a sheet to automatically match emails, WhatsApp, Facebook and LinkedIn links to each website. Every worksheet is scanned.
+      Upload a sheet to automatically detect and save emails, WhatsApp, Facebook and LinkedIn links for each website and source tab. Every worksheet is scanned.
     </Heading>
     <Notice><LockKeyhole size={18} /> Contacts are visible only after admin sign-in. Detection checks format; it does not verify ownership or deliverability.</Notice>
+    <label className="checkbox-row"><input type="checkbox" checked={automatic} disabled={busy} onChange={(e) => setAutomatic(e.target.checked)} /> Automatically save contacts after upload</label>
     <div className="contact-analyzer-inputs">
       <label className={"upload-zone " + (busy ? "disabled" : "")}><UploadCloud size={30} /><strong>{filename || "Upload sheet — contacts are detected automatically"}</strong>
         <span>XLSX, CSV or TSV · up to 20 MB · all worksheet tabs · email and phone columns detected automatically</span>
-        <input aria-label="Upload sheet for contact analysis" type="file" accept=".xlsx,.csv,.tsv" disabled={busy} onChange={(e) => { const file = e.target.files[0]; if (file) run(async () => { setProgress("Reading sheet…"); showSheets(await readWorkbook(file), file.name); }); e.target.value = ""; }} />
+        <input aria-label="Upload sheet for contact analysis" type="file" accept=".xlsx,.csv,.tsv" disabled={busy} onChange={(e) => { const file = e.target.files[0]; if (file) run(async () => { setProgress("Reading sheet…"); setReports([]); setRawSheets([]); setComplete(false); await receiveSheets(await readWorkbook(file), file.name); }); e.target.value = ""; }} />
       </label>
       <div className="panel form-panel"><h2>Analyze existing sheet notes</h2><p>Search the private notes preserved from earlier imports.</p>
         <button disabled={busy} onClick={() => run(analyzeSaved)}><Search size={17} /> Analyze saved notes</button>
@@ -93,7 +103,7 @@ export function ContactAnalyzer() {
       <label className="field"><span>Copied sheet cells</span><textarea rows={5} value={pasted} onChange={(e) => setPasted(e.target.value)} placeholder="Copy the website and contact columns, then paste them here." /></label>
       <button disabled={busy || !pasted.trim()} onClick={() => run(async () => {
         if (pasted.length > 2000000) throw new Error("Paste fewer than 2 million characters at a time.");
-        showSheets([{ name: "Pasted cells", rows: parseCSV(pasted, pasted.includes("\t") ? "\t" : ",") }], "Google Sheets paste");
+        await receiveSheets([{ name: "Pasted cells", rows: parseCSV(pasted, pasted.includes("\t") ? "\t" : ",") }], "Google Sheets paste");
       })}>Analyze pasted cells</button>
     </details>
     {progress && <Notice><span role="status">{progress}</span></Notice>}

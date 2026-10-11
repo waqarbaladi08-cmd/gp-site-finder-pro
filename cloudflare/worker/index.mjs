@@ -23,7 +23,7 @@ import {
 import { appBase, stripAppBase } from "../shared/routing.mjs";
 import { WEBSITE_ORIGIN, mountedResponse } from "./routing.mjs";
 import { mergeContacts, hasContact, hydrateContact, storeContact } from "../shared/contacts.mjs";
-import { savedSourceContact } from "../shared/contact-sources.mjs";
+import { savedSourceContact, sourceContactNote, websiteContactField } from "../shared/contact-sources.mjs";
 
 const json = (data, status = 200, headers = {}) =>
   Response.json(data, {
@@ -205,6 +205,8 @@ function insert(db, table, row, { replace = false, pk = ["id"] } = {}) {
 }
 function resourceRow(resource, input) {
   if (resource.table === "contacts") input = storeContact(input);
+  if (resource.table === "reseller_private" && text(input.field_value).length > 20000)
+    fail("Sheet contact notes are too long. Shorten them before saving.");
   const row = {};
   for (const k of resource.fields) {
     if (input[k] != null && (k !== "id" || input[k] !== ""))
@@ -212,6 +214,8 @@ function resourceRow(resource, input) {
         0,
         k === "raw_record"
           ? 50000
+          : resource.table === "reseller_private" && k === "field_value"
+            ? 20000
           : k === "notes" || k === "bio" || k === "message"
             ? 10000
             : 2000,
@@ -237,6 +241,12 @@ function resourceRow(resource, input) {
     if (resource.fields.includes(key))
       row[key] = key === "created_at" ? row[key] || now() : now();
   return row;
+}
+function insertPrivateNote(db, row) {
+  const keys = Object.keys(row);
+  return db.prepare(`INSERT INTO reseller_private(${keys.join(",")}) SELECT ${keys.map(() => "?")}
+    WHERE NOT EXISTS(SELECT 1 FROM reseller_private WHERE source_file=? AND COALESCE(sheet_name,'')=? AND field_name=? AND COALESCE(field_value,'')=?)`)
+    .bind(...keys.map((k) => sqlValue(row[k])), row.source_file, row.sheet_name || "", row.field_name, row.field_value || "");
 }
 async function route(request, env, ctx, additionalOrigin) {
   const url = new URL(request.url),
@@ -372,48 +382,67 @@ async function route(request, env, ctx, additionalOrigin) {
       const saved = await db.prepare("SELECT * FROM contacts WHERE domain=?").bind(d).first();
       let contact = saved ? hydrateContact(saved) : null;
       const matches = await db.prepare("SELECT DISTINCT source_file,sheet_name FROM sites WHERE domain=? AND source_file<>''").bind(d).all();
-      const notes = matches.results.length ? await db.prepare(`SELECT id,source_file,sheet_name,field_name,field_value
-        FROM reseller_private WHERE source_file IN (SELECT DISTINCT source_file FROM sites WHERE domain=? AND source_file<>'')
-        ORDER BY source_file,sheet_name,id`).bind(d).all() : { results: [] };
+      const notes = await db.prepare(`SELECT id,source_file,sheet_name,field_name,field_value
+        FROM reseller_private WHERE field_name=? OR
+        (source_file IN (SELECT DISTINCT source_file FROM sites WHERE domain=? AND source_file<>'')
+        AND field_name NOT LIKE 'Detected website contact: %')
+        ORDER BY source_file,sheet_name,id`).bind(websiteContactField(d), d).all();
       const sheetKey = (file, sheet) => JSON.stringify([file, text(sheet).toLowerCase()]);
       const matchingSheets = new Set(matches.results.map((r) => sheetKey(r.source_file, r.sheet_name)));
       const selectedSheet = listing && sheetKey(listing.source_file, listing.sheet_name);
-      const sources = new Map();
+      const sources = new Map(), publishers = new Map();
+      const matchingFiles = new Set(matches.results.map((r) => r.source_file));
       for (const r of notes.results) {
         const found = savedSourceContact(r);
         if (!hasContact(found)) continue;
-        if (found.domain) {
-          if (found.domain === d) contact = mergeContacts(contact || {}, found);
-          continue;
-        }
         const key = sheetKey(r.source_file, r.sheet_name);
         const scope = key === selectedSheet ? "selected_sheet" : matchingSheets.has(key) ? "matching_sheet"
+          : !matchingFiles.has(r.source_file) ? "other_source"
           : !text(r.sheet_name) ? "shared_workbook" : "other_workbook_tab";
+        if (found.domain) {
+          if (found.domain === d) {
+            contact = mergeContacts(contact || {}, found);
+            const { notes: provenance, ...channels } = found;
+            publishers.set(key, { ...mergeContacts(publishers.get(key), channels), scope });
+          }
+          continue;
+        }
         // Keep workbook contacts separate; never turn them into publisher contacts.
         const { notes: provenance, ...channels } = found;
         sources.set(key, { ...mergeContacts(sources.get(key), channels), scope });
       }
-      const priority = { selected_sheet: 0, matching_sheet: 1, shared_workbook: 2, other_workbook_tab: 3 };
+      const priority = { selected_sheet: 0, matching_sheet: 1, shared_workbook: 2, other_workbook_tab: 3, other_source: 4 };
       const suppliers = [...sources.values()].sort((a, b) => priority[a.scope] - priority[b.scope]);
       return json({ domain: d, country: listing?.country || "", contact, suppliers,
+        publisher_sources: [...publishers.values()].sort((a, b) => priority[a.scope] - priority[b.scope]),
+        source_file: listing?.source_file || "", sheet_name: listing?.sheet_name || "",
         matched_sheets: matches.results });
     }
     if (p === "/api/admin/contacts/merge" && m === "POST") {
       const b = await body(request, 300000);
       if (!Array.isArray(b.rows) || !b.rows.length || b.rows.length > 20)
         fail("Send 1–20 contact records per batch.");
-      const grouped = new Map();
+      const grouped = new Map(), sourceNotes = new Map();
       for (const input of b.rows) {
         if (!input || typeof input !== "object" || Array.isArray(input)) fail("Invalid contact record.");
         const row = resourceRow(RESOURCES.contacts, input);
+        const note = sourceContactNote({ ...hydrateContact(row), source_file: input.source_file, sheet_name: input.sheet_name });
+        if (note) sourceNotes.set(JSON.stringify(note), resourceRow(RESOURCES.resellers, note));
         grouped.set(row.domain, mergeContacts(grouped.get(row.domain), row));
       }
       const records = [...grouped.values()];
-      const existing = await db.batch(records.map((r) => db.prepare("SELECT * FROM contacts WHERE domain=?").bind(r.domain)));
-      const statements = records.map((r, i) => insert(db, "contacts", resourceRow(RESOURCES.contacts,
-        mergeContacts(existing[i].results[0], r)), { replace: true, pk: ["domain"] }));
-      await db.batch([...statements, bump(db)]);
-      return json({ saved: records.length });
+      const existing = await db.prepare(`SELECT * FROM contacts WHERE domain IN (${records.map(() => "?")})`)
+        .bind(...records.map((r) => r.domain)).all();
+      const byDomain = new Map(existing.results.map((r) => [r.domain, r]));
+      const statements = records.map((r) => insert(db, "contacts", resourceRow(RESOURCES.contacts,
+        mergeContacts(byDomain.get(r.domain), r)), { replace: true, pk: ["domain"] }));
+      await db.batch([
+        // Existing deployments can create this additive index on their first
+        // authorized upload, without a separate migration deployment.
+        db.prepare("CREATE INDEX IF NOT EXISTS idx_reseller_private_contact_lookup ON reseller_private(field_name, source_file, sheet_name)"),
+        ...statements, ...[...sourceNotes.values()].map((row) => insertPrivateNote(db, row)), bump(db),
+      ]);
+      return json({ saved: records.length, source_records: sourceNotes.size });
     }
     if (p === "/api/admin/contacts/sources" && m === "GET") {
       const table = url.searchParams.get("table") || "reseller_private";
@@ -442,18 +471,7 @@ async function route(request, env, ctx, additionalOrigin) {
         ...b.rows.map((input) => {
           const row = resourceRow(r, input);
           if (r.table === "reseller_private" && !row.id) {
-            const keys = Object.keys(row);
-            return db
-              .prepare(
-                `INSERT INTO reseller_private(${keys.join(",")}) SELECT ${keys.map(() => "?")} WHERE NOT EXISTS(SELECT 1 FROM reseller_private WHERE source_file=? AND COALESCE(sheet_name,'')=? AND field_name=? AND COALESCE(field_value,'')=?)`,
-              )
-              .bind(
-                ...keys.map((k) => sqlValue(row[k])),
-                row.source_file,
-                row.sheet_name || "",
-                row.field_name,
-                row.field_value || "",
-              );
+            return insertPrivateNote(db, row);
           }
           return insert(db, r.table, row, {
             replace: true,

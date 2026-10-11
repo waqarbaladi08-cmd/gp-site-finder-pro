@@ -7,6 +7,8 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { prepareSite } from "../shared/domain.mjs";
 import { scanSheet } from "../shared/import.mjs";
 import { sheetContactNote } from "../shared/contacts.mjs";
+import { importSheetReports, saveContactRows } from "../shared/import-flow.mjs";
+import { websiteContactField } from "../shared/contact-sources.mjs";
 import { WEBSITE_ORIGIN } from "../worker/routing.mjs";
 let mf, db, authCookie;
 const hash = (s) => createHash("sha256").update(s).digest("hex");
@@ -589,6 +591,89 @@ test("saved contacts after the first hundred notes and differently spaced tab na
   assert.equal(detail.body.suppliers[0].phone, "03041234567");
   assert.equal(detail.body.contact, null);
   assert.doesNotMatch(JSON.stringify((await call("/api/sites?q=footer")).body), /footer-private|03031234567|03041234567/);
+});
+
+test("automatic import saves each file and tab's contacts, adds contacts to existing listings, and re-imports without duplicates", async () => {
+  // An existing deployment can import without first running a schema command.
+  await db.prepare("DROP INDEX idx_reseller_private_contact_lookup").run();
+  const request = async (path, { method, body }) => {
+    const result = await call(path, { method, data: body, auth: true });
+    assert.equal(result.status, 200, result.body.error);
+    return result.body;
+  };
+  const d = "auto-scoped.example.com";
+  const reports = [
+    scanSheet([["Website", "Price", "Phone", "Gmail", "Facebook"], [d, "100", "03001234567", "elite-auto@gmail.com", "facebook.com/elite.auto"], ["WhatsApp: 03031234567"]], "Elite.xlsx", "First"),
+    scanSheet([["Website", "Price", "WhatsApp", "LinkedIn"], [d, "110", "+44 7700 900123", "linkedin.com/in/elite-last"]], "Elite.xlsx", "Last"),
+    scanSheet([["Name", "Phone"], ["Supplier", "03041234567"]], "Elite.xlsx", "Hidden contacts"),
+    scanSheet([["Website", "Price", "ContactNo", "Facebook"], [d, "90", "03011234567", "facebook.com/gppost.auto"]], "GP Post.xlsx", "Publishers"),
+    scanSheet([["Website", "Price"], [d, "80"]], "WaqarShah.xlsx", "Publishers"),
+  ];
+  const result = await importSheetReports(reports, request);
+  const index = await db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_reseller_private_contact_lookup'").first();
+  assert.equal(index.name, "idx_reseller_private_contact_lookup");
+  assert.equal(result.inserted, 4);
+  assert.equal(result.contactRecords, 3);
+  assert.equal(result.detected.phones, 5);
+  const updated = scanSheet([["Website", "Price", "Mobile"], [d, "80", "03021234567"]], "WaqarShah.xlsx", "Publishers");
+  const repeat = await importSheetReports([...reports, updated], request);
+  assert.equal(repeat.inserted, 0);
+  const count = await db.prepare("SELECT COUNT(*) AS n FROM reseller_private WHERE field_name=?").bind(websiteContactField(d)).first();
+  assert.equal(count.n, 4);
+  const listings = await call("/api/admin/sites?q=" + d, { auth: true });
+  assert.equal(listings.body.total, 4);
+  for (const listing of listings.body.rows) {
+    const path = `/api/admin/contacts/detail?domain=${d}&site_id=${listing.id}`;
+    assert.equal((await call(path)).status, 401);
+    const detail = await call(path, { auth: true });
+    assert.equal(detail.status, 200);
+    const selected = detail.body.publisher_sources.filter((r) => r.scope === "selected_sheet");
+    assert.equal(selected.length, 1);
+    assert.equal(selected[0].source_file, listing.source_file);
+    assert.equal(selected[0].sheet_name, listing.sheet_name);
+    const expected = listing.source_file === "GP Post.xlsx" ? "03011234567" : listing.source_file === "WaqarShah.xlsx" ? "03021234567" : listing.sheet_name === "First" ? "03001234567" : "+447700900123";
+    assert.equal(selected[0].phone || selected[0].whatsapp, expected);
+    assert.equal(detail.body.publisher_sources.length, 4);
+    assert.equal(detail.response.headers.get("Cache-Control"), "no-store");
+    if (listing.source_file === "Elite.xlsx" && listing.sheet_name === "First") {
+      assert.equal(selected[0].email, "elite-auto@gmail.com");
+      assert.equal(selected[0].facebook, "https://facebook.com/elite.auto");
+      assert.equal(detail.body.suppliers.find((r) => r.scope === "selected_sheet").whatsapp, "03031234567");
+    }
+  }
+  for (const path of ["/api/sites?q=" + d, "/api/export?q=" + d, "/api/stats", "/api/options"])
+    assert.doesNotMatch(JSON.stringify((await call(path)).body), /elite-auto|elite.auto|gppost.auto|030[0-4]1234567|447700900123/);
+});
+
+test("source contacts survive long JSON records and backups, including contacts from files without a public listing", async () => {
+  const sample = { domain: "source-only.example.com", source_file: "Contact directory.xlsx", sheet_name: "Editors",
+    phone: "03001234567", email: "source-backup@example.com",
+    facebook: Array.from({ length: 35 }, (_, i) => `https://facebook.com/private.source.${i}`).join("; "),
+    linkedin: Array.from({ length: 30 }, (_, i) => `https://linkedin.com/in/private-source-${i}`).join("; ") };
+  const request = async (path, { method, body }) => {
+    const result = await call(path, { method, data: body, auth: true });
+    assert.equal(result.status, 200, result.body.error);
+    return result.body;
+  };
+  await saveContactRows([sample, sample], request);
+  const rows = []; let offset = 0;
+  do {
+    const backup = await call("/api/admin/backup?table=reseller_private&offset=" + offset, { auth: true });
+    rows.push(...backup.body.rows.filter((r) => r.field_name === websiteContactField(sample.domain)));
+    offset = backup.body.next;
+  } while (offset !== null);
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0].field_value.length > 2000);
+  assert.equal(JSON.parse(rows[0].field_value).linkedin, sample.linkedin);
+  await db.prepare("DELETE FROM reseller_private WHERE id=?").bind(rows[0].id).run();
+  assert.equal((await call("/api/admin/restore", { method: "POST", auth: true, data: { table: "reseller_private", rows, confirm: "MERGE BACKUP" } })).status, 200);
+  const detail = await call("/api/admin/contacts/detail?domain=" + sample.domain, { auth: true });
+  assert.equal(detail.body.publisher_sources.length, 1);
+  assert.equal(detail.body.publisher_sources[0].source_file, sample.source_file);
+  assert.equal(detail.body.publisher_sources[0].scope, "other_source");
+  assert.equal(detail.body.publisher_sources[0].facebook, sample.facebook);
+  assert.equal(detail.body.publisher_sources[0].linkedin, sample.linkedin);
+  assert.equal((await call("/api/admin/resource-batch", { method: "POST", auth: true, data: { resource: "resellers", rows: [{ source_file: "invalid.xlsx", field_name: "Note", field_value: "x".repeat(20001) }] } })).status, 400);
 });
 
 test("sign-out revokes the existing server session", async () => {

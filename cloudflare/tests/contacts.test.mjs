@@ -45,6 +45,19 @@ test("contact parsing avoids dates, metrics, bank data and preserves phone prefi
   assert.equal(extractContacts(["https://wa.me/447700900123"]).whatsapp, "+447700900123");
 });
 
+test("footer contacts are detected under table columns without treating website IDs or prices as numbers", () => {
+  const report = scanSheet([
+    ["Website", "Price", "Traffic", "ContactNo"],
+    ["phone12345678901.example.com", "12345678901", "9876543210", "0300-1234567"],
+    ["WhatsApp: 03011234567", "", "", ""],
+    ["", "Mobile: +44 7700 900123", "", ""],
+  ], "footer.csv", "Publishers");
+  assert.equal(report.contacts[0].phone, "03001234567");
+  assert.equal(report.unassigned[0].whatsapp, "03011234567");
+  assert.equal(report.unassigned[1].phone, "+447700900123");
+  assert.doesNotMatch(JSON.stringify([...report.contacts, ...report.unassigned]), /12345678901;|9876543210/);
+});
+
 test("merging is idempotent and preserves previous emails, local phones and workflow notes", () => {
   const a = { domain: "example.com", email: "a@example.com", phone: "03001234567", notes: "Manually checked", status: "Replied", quoted_price: "75" };
   const b = { domain: "example.com", email: "A@example.com; b@example.com", notes: "Sheet: test.xlsx", status: "New" };
