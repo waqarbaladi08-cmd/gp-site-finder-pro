@@ -593,6 +593,44 @@ test("saved contacts after the first hundred notes and differently spaced tab na
   assert.doesNotMatch(JSON.stringify((await call("/api/sites?q=footer")).body), /footer-private|03031234567|03041234567/);
 });
 
+test("a scattered workbook contact page is recovered from existing imports and stays private to its source file", async () => {
+  const ids = [];
+  for (const source_file of ["supplier-layout.xlsx", "other-layout.xlsx"]) {
+    const row = prepareSite({ site: "contact-page.example.com", source_file, sheet_name: "Publishers" });
+    const keys = Object.keys(row);
+    const result = await db.prepare(`INSERT INTO sites(${keys.join(",")}) VALUES(${keys.map(() => "?")})`).bind(...keys.map((key) => row[key])).run();
+    ids.push(result.meta.last_row_id);
+  }
+  const notes = [
+    // Older imports kept the page as raw notes, with a Fiverr or agency URL.
+    { source_file: "supplier-layout.xlsx", sheet_name: "Contact", field_name: "Sheet contact / payment note", field_value: "supplier-private@example.com | https://www.fiverr.com/s/FICTIONAL" },
+    { source_file: "supplier-layout.xlsx", sheet_name: "Contact", field_name: "Sheet contact / payment note", field_value: "editor-private@example.com" },
+    { source_file: "supplier-layout.xlsx", sheet_name: "Contact", field_name: "Sheet contact / payment note", field_value: "https://facebook.com/example.private.supplier" },
+    { source_file: "supplier-layout.xlsx", sheet_name: "Contact", field_name: "Sheet contact / payment note", field_value: "https://agency.example.com/ | https://linkedin.com/in/example-private-supplier" },
+    { source_file: "other-layout.xlsx", sheet_name: "Contact", field_name: "Phone", field_value: "03011234567" },
+    { source_file: "unmatched-layout.xlsx", sheet_name: "Contact", field_name: "Email", field_value: "unrelated-private@example.com" },
+  ];
+  assert.equal((await call("/api/admin/resource-batch", { method: "POST", auth: true, data: { resource: "resellers", rows: notes } })).status, 200);
+  const path = "/api/admin/contacts/detail?domain=contact-page.example.com&site_id=";
+  assert.equal((await call(path + ids[0])).status, 401);
+  const detail = await call(path + ids[0], { auth: true });
+  const supplier = detail.body.suppliers.find((r) => r.source_file === "supplier-layout.xlsx");
+  assert.equal(supplier.scope, "shared_workbook");
+  assert.equal(supplier.sheet_name, "Contact");
+  assert.equal(supplier.domain, "");
+  assert.equal(supplier.email, "supplier-private@example.com; editor-private@example.com");
+  assert.equal(supplier.facebook, "https://facebook.com/example.private.supplier");
+  assert.equal(supplier.linkedin, "https://linkedin.com/in/example-private-supplier");
+  assert.equal(supplier.phone, "");
+  assert.equal(supplier.whatsapp, "");
+  assert.equal(detail.body.contact, null);
+  assert.equal(detail.body.publisher_sources.length, 0);
+  assert.equal(detail.body.suppliers.find((r) => r.source_file === "other-layout.xlsx").phone, "03011234567");
+  assert.doesNotMatch(JSON.stringify(detail.body), /unrelated-private/);
+  for (const p of ["/api/sites?q=contact-page", "/api/export?q=contact-page", "/api/stats", "/api/options"])
+    assert.doesNotMatch(JSON.stringify((await call(p)).body), /supplier-private|editor-private|example.private.supplier|example-private-supplier|03011234567/);
+});
+
 test("automatic import saves each file and tab's contacts, adds contacts to existing listings, and re-imports without duplicates", async () => {
   // An existing deployment can import without first running a schema command.
   await db.prepare("DROP INDEX idx_reseller_private_contact_lookup").run();

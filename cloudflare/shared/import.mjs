@@ -1,5 +1,5 @@
 import { domain, text } from "./domain.mjs";
-import { analyzeContactRows, sheetContactNote } from "./contacts.mjs";
+import { analyzeContactRows, sheetContactNote, websiteCellDomain } from "./contacts.mjs";
 export const IMPORT_FIELDS = [
   "site",
   "country",
@@ -112,13 +112,15 @@ export function scanSheet(raw, source_file, sheet_name, override = null) {
       mapping.forEach((field, i) => {
         if (field && !all[field]) all[field] = text(values[i]);
       });
-      const d = domain(all.site);
+      const d = websiteCellDomain(all.site);
       if (!d) {
         invalid++;
         continue;
       }
       rows.push({
         ...Object.fromEntries(IMPORT_FIELDS.map((k) => [k, all[k] || ""])),
+        // Contact targets retained for analysis must never enter public fields.
+        site: /\s+(?:mailto:|tel:)/i.test(all.site) ? d : all.site,
         source_file,
         sheet_name,
       });

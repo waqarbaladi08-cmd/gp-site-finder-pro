@@ -27,6 +27,19 @@ export function contactURL(value) {
   } catch { return ""; }
 }
 
+function isContactPageURL(value) {
+  try {
+    return /(?:^|\/)(?:contact(?:-us)?|about(?:-us)?|write-for-us|contribute|contributors?|editorial|submit)(?:[/.]|$)/i.test(new URL(value).pathname);
+  } catch { return false; }
+}
+
+// A workbook's contact page can put the agency website and Fiverr profile
+// beside its own email. Those links are not publisher ownership evidence.
+export function isWorkbookContactSheet(name, fields = []) {
+  const label = text(name).toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  return !fields.includes("site") && /^(?:contacts?(?: us| details| information| info)?|(?:supplier|reseller|agency|admin) contacts?)$/.test(label);
+}
+
 const channelHosts = {
   facebook: ["facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com", "fb.com", "www.fb.com", "fb.me"],
   linkedin: ["linkedin.com", "www.linkedin.com", "m.linkedin.com"],
@@ -96,7 +109,7 @@ export function extractContacts(cells, fields = []) {
     if (field === "telegram") out.telegram.push(...splitValues(s).filter((v) => /^@?[a-z0-9_]{5,32}$/i.test(v)));
     if (field === "admin_name" && !emails.length) out.admin_name.push(s);
     for (const url of urls) {
-      if ((field === "contact_url" || /\/(?:contact|about|write-for-us|contribut|editorial|submit)/i.test(url)) && !Object.keys(channelHosts).some((k) => channelURL(k, url)))
+      if ((field === "contact_url" || isContactPageURL(url)) && !Object.keys(channelHosts).some((k) => channelURL(k, url)))
         out.contact_url.push(contactURL(url.replace(/[.,;]+$/, "")));
     }
     const isPhone = field === "phone" || field === "whatsapp";
@@ -188,25 +201,32 @@ export function mergeContacts(old = {}, incoming = {}) {
   return result;
 }
 
+export function websiteCellDomain(value) {
+  const s = text(value);
+  // Excel can display a publisher domain while the cell links to its email.
+  return domain(s) || domain(s.match(/^(\S+)\s+(?:mailto:|tel:)/i)?.[1]);
+}
+
 export function detectRowDomain(cells, fields = []) {
-  const mapped = cells.map((v, i) => fields[i] === "site" ? domain(v) : "").find(Boolean);
+  const mapped = cells.map((v, i) => fields[i] === "site" ? websiteCellDomain(v) : "").find(Boolean);
   if (mapped) return mapped;
   // Never infer a publisher from an email address or a contact-page link.
   const candidates = unique(cells.map((v, i) => {
     const s = text(v);
-    return !CONTACT_FIELDS.includes(fields[i]) && !s.includes("@") && !/\s/.test(s) && !Object.keys(channelHosts).some((k) => channelURL(k, s)) && !/\/(?:contact|about|write-for-us)/i.test(s) ? domain(s) : "";
+    return !CONTACT_FIELDS.includes(fields[i]) && !s.includes("@") && !/\s/.test(s) && !Object.keys(channelHosts).some((k) => channelURL(k, s)) && !isContactPageURL(s) ? domain(s) : "";
   }));
   return candidates.length === 1 ? candidates[0] : "";
 }
 
 export function analyzeContactRows(raw, source, sheet, header = -1, mapping = []) {
   const byDomain = new Map(), unassigned = [];
+  const workbookContact = isWorkbookContactSheet(sheet, mapping);
   raw.forEach((cells, index) => {
     if (index === header) return;
     const fields = header >= 0 && index > header ? mapping : [];
     const found = extractContacts(cells, fields);
     if (!hasContact(found) && !found.admin_name) return;
-    const d = detectRowDomain(cells, fields);
+    const d = workbookContact ? "" : detectRowDomain(cells, fields);
     const record = { ...found, domain: d, source_file: source, sheet_name: sheet,
       notes: `Sheet: ${source} / ${sheet} / row ${index + 1}`, row: index + 1 };
     if (d) byDomain.set(d, mergeContacts(byDomain.get(d), record));

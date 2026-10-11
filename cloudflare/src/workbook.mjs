@@ -1,4 +1,20 @@
 import { parseCSV } from "../shared/import.mjs";
+import { extractContacts } from "../shared/contacts.mjs";
+
+function valueText(value) {
+  if (value == null) return "";
+  if (typeof value !== "object") return String(value);
+  if (value.richText) return value.richText.map((part) => valueText(part.text)).join("");
+  return valueText(value.text ?? value.result);
+}
+
+function hyperlinkText(label, target) {
+  const found = extractContacts([label]);
+  // A label can contain the only phone number, including nested rich text.
+  // Ordinary website labels still resolve to a clean URL for row matching.
+  if (/^https?:/i.test(target) && !found.email && !found.phone && !found.whatsapp) return target;
+  return `${label} ${target}`.trim();
+}
 
 export function cellText(cell) {
   const v = cell?.value;
@@ -9,14 +25,16 @@ export function cellText(cell) {
     return String(v);
   }
   if (v.formula) {
-    const link = v.formula.match(/^(?:_xlfn\.)?HYPERLINK\(\s*"((?:[^"\n]|"")+)"\s*[,;]/i)?.[1]?.replace(/""/g, '"');
-    if (link && /^(https?:|mailto:|tel:)/i.test(link)) return /^https?:/i.test(link) && !/@/.test(v.result || "") ? link : `${v.result || ""} ${link}`.trim();
+    const parts = v.formula.match(/^(?:_xlfn\.)?HYPERLINK\(\s*"((?:[^"\n]|"")+)"\s*[,;]\s*(?:"((?:[^"\n]|"")*)")?/i);
+    const link = parts?.[1]?.replace(/""/g, '"');
+    if (link && /^(https?:|mailto:|tel:)/i.test(link))
+      return hyperlinkText(valueText(v.result) || parts?.[2]?.replace(/""/g, '"') || "", link);
   }
   if (v.hyperlink) {
     if (/^(https?:|mailto:|tel:)/i.test(v.hyperlink))
-      return /^https?:/i.test(v.hyperlink) && !/@/.test(v.text || "") ? v.hyperlink : `${v.text || ""} ${v.hyperlink}`.trim();
+      return hyperlinkText(valueText(v.text), v.hyperlink);
   }
-  return String(v.text ?? (v.richText ? v.richText.map((x) => x.text).join("") : v.result ?? ""));
+  return valueText(v);
 }
 
 export async function readWorkbook(file) {

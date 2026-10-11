@@ -113,6 +113,7 @@ export function ContactAnalyzer() {
         <div className="stat-card"><small>Website matches</small><strong>{contacts.length.toLocaleString()}</strong></div>
         <div className="stat-card"><small>Sheet contacts</small><strong>{unassigned.length.toLocaleString()}</strong></div></div>
       <Notice>{links} social / contact links detected. Click any contact in the table to open it.</Notice>
+      {!phones && <Notice>No phone number or WhatsApp chat link was found. The sheet needs a number or a clickable WhatsApp link; a logo alone cannot identify a contact.</Notice>}
       <section className="panel form-panel"><h2>Contacts in every sheet</h2>
         <div className="table-wrap"><table><thead><tr><th>File / sheet</th><th>Entries</th><th>Website matches</th><th>Emails</th><th>Numbers</th><th>Links</th></tr></thead><tbody>
           {sourceSummaries.map((r) => <tr key={JSON.stringify([r.source_file, r.sheet_name])}><td>{r.source_file}<br /><strong>{r.sheet_name || "Workbook contact"}</strong></td><td>{r.entries}</td><td>{r.websites}</td><td>{r.emails}</td><td>{r.phones}</td><td>{r.links}</td></tr>)}

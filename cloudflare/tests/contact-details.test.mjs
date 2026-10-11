@@ -39,3 +39,20 @@ test("an older contact without source attribution is labeled separately from a s
   assert.match(html, /Previously saved website contacts/);
   assert.match(html, /do not have a retained sheet assignment/);
 });
+
+test("a workbook contact tab is visible beside the listing while a different workbook stays separate", () => {
+  const html = renderToStaticMarkup(React.createElement(ContactDetailsContent, { data: {
+    source_file: "supplier-layout.xlsx", sheet_name: "Publishers", contact: null,
+    suppliers: [
+      { source_file: "supplier-layout.xlsx", sheet_name: "Contact", scope: "shared_workbook", email: "supplier@example.com", facebook: "https://facebook.com/example.supplier", linkedin: "https://linkedin.com/in/example-supplier" },
+      { source_file: "different.xlsx", sheet_name: "Contact", scope: "shared_workbook", phone: "03011234567" },
+    ],
+  } }));
+  const primary = html.split("<details>")[0];
+  assert.match(primary, /Shared workbook contact/);
+  assert.match(primary, /supplier-layout.xlsx · Contact/);
+  assert.match(primary, /mailto:supplier@example.com/);
+  assert.match(primary, /href="https:\/\/facebook.com\/example.supplier"/);
+  assert.match(primary, /href="https:\/\/linkedin.com\/in\/example-supplier"/);
+  assert.doesNotMatch(primary, /different.xlsx|03011234567|No contact was detected/);
+});

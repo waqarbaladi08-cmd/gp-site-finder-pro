@@ -197,3 +197,43 @@ test("Excel HYPERLINK formulas and formatted zero-prefixed phone cells retain ro
   assert.equal(r.contacts[0].facebook, "https://facebook.com/editor.one");
   assert.equal(r.contacts[0].linkedin, "https://linkedin.com/in/editor-one");
 });
+
+test("nested rich hyperlink labels keep their contact numbers and literal formula labels without a cached result", () => {
+  const rows = [
+    ["Website", "Phone", "Email"],
+    [cellText({ value: { text: { richText: [{ text: "Visit publisher" }] }, hyperlink: "https://publisher.example.com" } }),
+      cellText({ value: { text: { richText: [{ text: "Phone: 0300" }, { text: "1234567" }] }, hyperlink: "https://agency.example.com" } }),
+      cellText({ value: { text: { richText: [{ text: "Contact: editor" }, { text: "@example.com" }] }, hyperlink: "mailto:editor@example.com" } })],
+  ];
+  const report = scanSheet(rows, "rich-links.xlsx", "Publishers");
+  assert.equal(report.contacts[0].domain, "publisher.example.com");
+  assert.equal(report.contacts[0].phone, "03001234567");
+  assert.equal(report.contacts[0].email, "editor@example.com");
+  assert.doesNotMatch(JSON.stringify(rows), /\[object Object\]/);
+  const formula = cellText({ value: { formula: 'HYPERLINK("https://agency.example.com"; "Phone: +44 7700 900123")' } });
+  assert.equal(extractContacts([formula]).phone, "+447700900123");
+});
+
+test("publisher hostnames and articles about contact lenses are not contact page links", () => {
+  const found = extractContacts([
+    "http://editorial.example.com/",
+    "https://about-news.example.com/",
+    "https://contacthelp.example.com/author/editor",
+    "https://publisher.example.com/blog/contact-lenses-for-busy-lifestyles",
+    "https://publisher.example.com/contact-us",
+    "https://publisher.example.com/p/about.html",
+  ]);
+  assert.equal(found.contact_url, "https://publisher.example.com/contact-us; https://publisher.example.com/p/about.html");
+  assert.equal(scanSheet([["https://about-news.example.com/", "editor@example.com"]], "sites.csv", "Sheet").contacts[0].domain, "about-news.example.com");
+});
+
+test("a publisher domain displayed on a mailto hyperlink retains email ownership without leaking the target into listings", () => {
+  const label = cellText({ value: { text: { richText: [{ text: "publisher.example.com" }] }, hyperlink: "mailto:editor@publisher.example.com" } });
+  const report = scanSheet([["Website", "Price"], [label, "50"]], "domain-mailto.xlsx", "Publishers");
+  assert.equal(report.rows.length, 1);
+  assert.equal(report.rows[0].site, "publisher.example.com");
+  assert.equal(report.contacts[0].domain, "publisher.example.com");
+  assert.equal(report.contacts[0].email, "editor@publisher.example.com");
+  assert.equal(report.unassigned.length, 0);
+  assert.doesNotMatch(JSON.stringify(report.rows), /mailto:|editor@/);
+});

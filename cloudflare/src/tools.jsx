@@ -313,6 +313,7 @@ export function ImportPage() {
               <strong>{reports.length}</strong>
             </div>
           </div>
+          {!detected.phones && <Notice>No phone number or WhatsApp chat link was found in this file. A WhatsApp logo alone does not contain a number.</Notice>}
           {reports.map((r, index) => (
             <section className="panel form-panel" key={r.sheet_name}>
               <div className="panel-heading flush">

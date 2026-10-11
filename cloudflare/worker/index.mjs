@@ -398,7 +398,7 @@ async function route(request, env, ctx, additionalOrigin) {
         const key = sheetKey(r.source_file, r.sheet_name);
         const scope = key === selectedSheet ? "selected_sheet" : matchingSheets.has(key) ? "matching_sheet"
           : !matchingFiles.has(r.source_file) ? "other_source"
-          : !text(r.sheet_name) ? "shared_workbook" : "other_workbook_tab";
+          : !text(r.sheet_name) || found.workbook_contact ? "shared_workbook" : "other_workbook_tab";
         if (found.domain) {
           if (found.domain === d) {
             contact = mergeContacts(contact || {}, found);

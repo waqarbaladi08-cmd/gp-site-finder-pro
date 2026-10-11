@@ -86,3 +86,33 @@ test("XLSX scanning keeps distinct numbers in all worksheet tabs including the l
   assert.equal(contactPreviewRows(reports).length, 4);
   assert.equal(contactSummary(reports).phones, 4);
 });
+
+test("a workbook contact page keeps scattered supplier channels together without assigning them to Fiverr or an agency URL", async () => {
+  const wb = new ExcelJS.Workbook();
+  const sites = wb.addWorksheet("Publishers");
+  sites.addRow(["Website", "Price"]);
+  sites.addRow(["publisher.example.com", "50"]);
+  const page = wb.addWorksheet("Contact");
+  page.getCell("D2").value = "supplier@example.com";
+  page.getCell("G2").value = { text: "Fiverr", hyperlink: "https://www.fiverr.com/s/FICTIONAL" };
+  page.getCell("D3").value = "editor@example.com";
+  page.getCell("G4").value = { text: "Facebook", hyperlink: "https://facebook.com/example.supplier" };
+  page.getCell("D5").value = { text: "Agency", hyperlink: "https://agency.example.com/" };
+  page.getCell("G5").value = { text: "LinkedIn", hyperlink: "https://linkedin.com/in/example-supplier" };
+  const bytes = await wb.xlsx.writeBuffer();
+  const sheets = await readWorkbook({ name: "supplier-layout.xlsx", size: bytes.length, arrayBuffer: async () => bytes });
+  const reports = sheets.map((sheet) => scanSheet(sheet.rows, "supplier-layout.xlsx", sheet.name));
+  const report = reports.find((r) => r.sheet_name === "Contact");
+  assert.equal(report.contacts.length, 0);
+  assert.equal(report.unassigned.length, 4);
+  assert.deepEqual(Object.fromEntries(["emails", "phones", "links"].map((key) => [key, contactSummary(reports)[key]])), { emails: 2, phones: 0, links: 2 });
+  const saved = report.privateFields.map((r) => savedSourceContact(r));
+  assert.ok(saved.every((r) => r.domain === "" && r.workbook_contact));
+  assert.ok(saved.some((r) => r.linkedin === "https://linkedin.com/in/example-supplier"));
+  assert.ok(saved.some((r) => r.email === "supplier@example.com"));
+  // A real publisher table in a tab named Contact still uses explicit domains.
+  const table = scanSheet([["Website", "Phone"], ["publisher.example.com", "03001234567"]], "supplier-layout.xlsx", "Contact");
+  const publisher = savedSourceContact(sourceContactNote(table.contacts[0]));
+  assert.equal(publisher.domain, "publisher.example.com");
+  assert.equal(publisher.workbook_contact, false);
+});

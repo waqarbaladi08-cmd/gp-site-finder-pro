@@ -1,6 +1,6 @@
 import { domain, text } from "./domain.mjs";
 import { headerField } from "./import.mjs";
-import { CONTACT_FIELDS, contactSummary, detectRowDomain, extractContacts, hasContact, hydrateContact } from "./contacts.mjs";
+import { CONTACT_FIELDS, contactSummary, detectRowDomain, extractContacts, hasContact, hydrateContact, isWorkbookContactSheet } from "./contacts.mjs";
 
 // Preserve each source both in the preview and when saving. Counts can still
 // aggregate by domain without losing the file that supplied a particular value.
@@ -66,9 +66,10 @@ export function savedSourceContact(row, table = "reseller_private") {
     }
   }
   const found = extractContacts(values, fields);
-  const assigned = domain(row.site) || detectRowDomain(values, fields) || domain(raw.match(
+  const workbook_contact = !domain(row.site) && isWorkbookContactSheet(row.sheet_name, fields);
+  const assigned = workbook_contact ? "" : domain(row.site) || detectRowDomain(values, fields) || domain(raw.match(
     /(?:^|[|\n])\s*(?:website(?:\s+(?:link|url|name|address))?|site|domain|url)\s*:\s*(\S+)/i)?.[1]);
   return { ...found, domain: assigned, source_file: row.source_file || "Saved notes",
-    sheet_name: row.sheet_name || "", persisted: table === "reseller_private",
+    sheet_name: row.sheet_name || "", workbook_contact, persisted: table === "reseller_private",
     notes: `Saved sheet note: ${row.source_file || ""} / ${row.sheet_name || ""} / ${table} ${row.id}` };
 }
